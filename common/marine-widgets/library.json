@@ -1,0 +1,8 @@
+{
+  "name": "marine-widgets",
+  "version": "1.0.0",
+  "description": "Contract for one screen widget. Each firmware supplies the widgets it draws; this library is the header those registries share.",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}
