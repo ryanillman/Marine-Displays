@@ -1,0 +1,8 @@
+{
+  "name": "marine-fonts",
+  "version": "1.0.0",
+  "description": "Inter font sources shared by every Marine Displays board. Declarations stay in each board tree because the color boards and the RLCD do not declare these symbols the same way.",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}
