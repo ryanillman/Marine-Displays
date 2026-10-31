@@ -8,6 +8,7 @@ bool test_mode = false;
 #include "LVGL_Driver.h"
 #include "SD_Card.h"
 #include "ui.h"
+#include "widget_registry.h"
 #include "ui_Settings.h"
 #include "signalk_config.h"
 #include "screen_config_c_api.h"
@@ -159,7 +160,7 @@ int16_t value_to_angle_for_param(float value, int screen, int gauge) {
 }
 
 // Generic needle animation helper that caches the last angle per needle
-static void animate_generic_needle(lv_obj_t* needle, int16_t &last_angle, int16_t new_angle, bool is_lower) {
+void animate_generic_needle(lv_obj_t* needle, int16_t &last_angle, int16_t new_angle, bool is_lower) {
     if (needle == NULL) {
         return;
     }
@@ -197,164 +198,6 @@ void initialize_needle_positions() {
     if (ui_Lower_Needle3) lower_needle_anim_cb(ui_Lower_Needle3, 180);
     if (ui_Lower_Needle4) lower_needle_anim_cb(ui_Lower_Needle4, 180);
     if (ui_Lower_Needle5) lower_needle_anim_cb(ui_Lower_Needle5, 180);
-}
-
-// Update both needles for the active screen using live Signal K sensor values
-// Update center number for Gauge+Number display type
-static void update_gauge_number_center(int screen_num) {
-    int s = screen_num - 1; // 0-based index
-    if (s < 0 || s >= NUM_SCREENS) return;
-    if (screen_configs[s].display_type != DISPLAY_TYPE_GAUGE_NUMBER) return;
-
-    String path = String(screen_configs[s].gauge_num_center_path);
-    if (path.length() == 0) return;
-
-    float raw = get_sensor_value_by_path(path);
-    if (isnan(raw)) return;
-
-    // Unit conversion (SI → display units)
-    String unit = get_sensor_unit_by_path(path);
-    String desc = get_sensor_description_by_path(path);
-    float display_val = raw;
-    String display_unit = unit;
-
-    display_val = convert_unit(raw, display_unit, path, display_unit);
-
-    gauge_number_display_update_center(s, display_val, display_unit.c_str(), desc.c_str());
-}
-
-extern "C" void update_needles_for_screen(int screen_num) {
-    // Index 1-5 correspond to Screen1..Screen5
-    if (screen_num < 1 || screen_num > 5) return;
-    // If test mode is active, skip all live data updates
-    extern bool test_mode;
-    if (test_mode) return;
-
-    // Update center number for Gauge+Number screens
-    update_gauge_number_center(screen_num);
-
-    // Default angles: top needles at 0°, bottom needles at 180°
-    // Use the global `last_top_angle` / `last_bottom_angle` defined at file scope
-    extern int16_t last_top_angle[6];
-    extern int16_t last_bottom_angle[6];
-    static bool initialized[6] = {false, false, false, false, false, false}; // Track if needles have been set to defaults
-
-    lv_obj_t* top_needle = NULL;
-    lv_obj_t* bottom_needle = NULL;
-    ParamType top_type = PARAM_RPM;
-    ParamType bottom_type = PARAM_COOLANT_TEMP;
-    float top_value = 0.0f;
-    float bottom_value = 0.0f;
-
-    switch (screen_num) {
-        case 1:  // RPM + Coolant Temp
-            top_needle = ui_Needle;
-            bottom_needle = ui_Lower_Needle;
-            top_value = get_sensor_value(SCREEN1_RPM);
-            bottom_value = get_sensor_value(SCREEN1_COOLANT_TEMP);
-            top_type = PARAM_RPM;
-            bottom_type = PARAM_COOLANT_TEMP;
-            // Debug output disabled for performance
-            break;
-        case 2:  // RPM + Fuel
-            top_needle = ui_Needle2;
-            bottom_needle = ui_Lower_Needle2;
-            top_value = get_sensor_value(SCREEN2_RPM);
-            bottom_value = get_sensor_value(SCREEN2_FUEL);
-            top_type = PARAM_RPM;
-            bottom_type = PARAM_FUEL;
-            break;
-        case 3:  // Coolant Temp + Exhaust Temp
-            top_needle = ui_Needle3;
-            bottom_needle = ui_Lower_Needle3;
-            top_value = get_sensor_value(SCREEN3_COOLANT_TEMP);
-            bottom_value = get_sensor_value(SCREEN3_EXHAUST_TEMP);
-            top_type = PARAM_COOLANT_TEMP;
-            bottom_type = PARAM_EXHAUST_TEMP;
-            break;
-        case 4:  // Fuel + Coolant Temp
-            top_needle = ui_Needle4;
-            bottom_needle = ui_Lower_Needle4;
-            top_value = get_sensor_value(SCREEN4_FUEL);
-            bottom_value = get_sensor_value(SCREEN4_COOLANT_TEMP);
-            top_type = PARAM_FUEL;
-            bottom_type = PARAM_COOLANT_TEMP;
-            break;
-        case 5:  // Oil Pressure + Coolant Temp
-            top_needle = ui_Needle5;
-            bottom_needle = ui_Lower_Needle5;
-            top_value = get_sensor_value(SCREEN5_OIL_PRESSURE);
-            bottom_value = get_sensor_value(SCREEN5_COOLANT_TEMP);
-            top_type = PARAM_OIL_PRESSURE;
-            bottom_type = PARAM_COOLANT_TEMP;
-            break;
-        default:
-            return;
-    }
-
-    // Set defaults on first run, then use sensor data or keep defaults if no valid data
-    int16_t top_angle, bottom_angle;
-    
-    if (!initialized[screen_num]) {
-        // First run: set to defaults
-        top_angle = 0;    // Top needles start at 0°
-        bottom_angle = 180; // Bottom needles start at 180°
-        initialized[screen_num] = true;
-    } else {
-        // Use sensor data if valid (not NAN); otherwise keep current position.
-        // Previous logic excluded zero values (e.g. RPM==0) which prevented
-        // needles from updating when a valid zero reading was present. Treat
-        // any non-NAN value as valid here.
-        if (!isnan(top_value)) {
-            top_angle = value_to_angle_for_param(top_value, screen_num - 1, 0);  // 0 = top gauge
-        } else {
-            top_angle = last_top_angle[screen_num]; // Keep current position if no valid data
-        }
-
-        if (!isnan(bottom_value)) {
-            bottom_angle = value_to_angle_for_param(bottom_value, screen_num - 1, 1);  // 1 = bottom gauge
-        } else {
-            bottom_angle = last_bottom_angle[screen_num]; // Keep current position if no valid data
-        }
-    }
-
-
-    // Reduced debug output for production build
-
-    animate_generic_needle(top_needle, last_top_angle[screen_num], top_angle, false);
-    animate_generic_needle(bottom_needle, last_bottom_angle[screen_num], bottom_angle, true);
-
-    // Update dynamic icon recoloring for this screen/gauges based on current values
-    lv_obj_t* top_icon = NULL;
-    lv_obj_t* bottom_icon = NULL;
-
-    switch (screen_num) {
-        case 1:
-            top_icon = ui_TopIcon1;
-            bottom_icon = ui_BottomIcon1;
-            break;
-        case 2:
-            top_icon = ui_TopIcon2;
-            bottom_icon = ui_BottomIcon2;
-            break;
-        case 3:
-            top_icon = ui_TopIcon3;
-            bottom_icon = ui_BottomIcon3;
-            break;
-        case 4:
-            top_icon = ui_TopIcon4;
-            bottom_icon = ui_BottomIcon4;
-            break;
-        case 5:
-            top_icon = ui_TopIcon5;
-            bottom_icon = ui_BottomIcon5;
-            break;
-        default:
-            break;
-    }
-
-    if (top_icon) _ui_apply_icon_style(top_icon, screen_num - 1, 0);
-    if (bottom_icon) _ui_apply_icon_style(bottom_icon, screen_num - 1, 1);
 }
 
 // Move the specified gauge (top/bottom) on a given screen to the specified angle for testing

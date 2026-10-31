@@ -1,16 +1,8 @@
 // Runtime hot-update helpers for updating backgrounds and icons without reboot
 #include "ui.h"
 #include "screen_config_c_api.h"
-#include "number_display.h"
-#include "dual_number_display.h"
-#include "quad_number_display.h"
-#include "gauge_number_display.h"
 #include "ui_Settings.h"
-#include "graph_display.h"
-#include "compass_display.h"
-#include "position_display.h"
-#include "ais_display.h"
-#include "anchor_display.h"
+#include "widget_registry.h"
 #include <lvgl.h>
 #include "esp_log.h"
 #include <Arduino.h>
@@ -18,14 +10,6 @@
 #include <esp_heap_caps.h>
 static const char *TAG_UIHOT = "ui_hotupdate";
 
-// Forward declaration for reset function in main.cpp
-extern "C" void reset_number_display_tracking(int screen_num);
-extern "C" void mark_compass_display_created(int screen_num);
-extern "C" void mark_compass_display_destroyed(int screen_num);
-extern "C" void mark_position_display_created(int screen_num);
-extern "C" void mark_position_display_destroyed(int screen_num);
-// Forward declaration for update function in main.cpp
-extern "C" void force_update_number_display(int screen_num);
 // Per-screen lazy-apply flags (defined in network_setup.cpp)
 extern volatile bool g_screens_need_apply[5];
 
@@ -35,17 +19,6 @@ extern const char *ui_img_rev_fuel_png;
 extern const char *ui_img_temp_exhaust_png;
 extern const char *ui_img_fuel_temp_png;
 extern const char *ui_img_oil_temp_png;
-
-static lv_obj_t *get_screen_obj(int s) {
-    switch (s) {
-        case 0: return ui_Screen1;
-        case 1: return ui_Screen2;
-        case 2: return ui_Screen3;
-        case 3: return ui_Screen4;
-        case 4: return ui_Screen5;
-        default: return NULL;
-    }
-}
 
 static lv_obj_t *get_background_img_obj_for_screen(int s) {
     switch (s) {
@@ -83,17 +56,6 @@ static lv_obj_t *get_bottom_icon_obj_for_screen(int s) {
         case 2: return ui_BottomIcon3;
         case 3: return ui_BottomIcon4;
         case 4: return ui_BottomIcon5;
-        default: return NULL;
-    }
-}
-
-static lv_obj_t *get_upper_needle_obj_for_screen(int s) {
-    switch (s) {
-        case 0: return ui_Needle;
-        case 1: return ui_Needle2;
-        case 2: return ui_Needle3;
-        case 3: return ui_Needle4;
-        case 4: return ui_Needle5;
         default: return NULL;
     }
 }
@@ -202,213 +164,8 @@ bool apply_screen_visuals_for_one(int s) {
         }
         any = any || a || b;
 
-        if (screen_configs[s].display_type == DISPLAY_TYPE_NUMBER) {
-            Serial.printf("[APPLY_ONE] s=%d → NUMBER\n", s);
-            dual_number_display_destroy(s);
-            quad_number_display_destroy(s);
-            gauge_number_display_destroy(s);
-            graph_display_destroy(s);
-            lv_obj_t *upper_needle = get_upper_needle_obj_for_screen(s);
-            lv_obj_t *lower_needle = get_lower_needle_obj_for_screen(s);
-            if (upper_needle) lv_obj_add_flag(upper_needle, LV_OBJ_FLAG_HIDDEN);
-            if (lower_needle) lv_obj_add_flag(lower_needle, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_t *top_icon = get_top_icon_obj_for_screen(s);
-            lv_obj_t *bot_icon = get_bottom_icon_obj_for_screen(s);
-            if (top_icon) lv_obj_add_flag(top_icon, LV_OBJ_FLAG_HIDDEN);
-            if (bot_icon) lv_obj_add_flag(bot_icon, LV_OBJ_FLAG_HIDDEN);
-            number_display_create(s);
-            reset_number_display_tracking(s + 1);
-            force_update_number_display(s + 1);
-            any = true;
-        } else if (screen_configs[s].display_type == DISPLAY_TYPE_DUAL) {
-            Serial.printf("[APPLY_ONE] s=%d → DUAL\n", s);
-            number_display_destroy(s);
-            quad_number_display_destroy(s);
-            gauge_number_display_destroy(s);
-            graph_display_destroy(s);
-            lv_obj_t *upper_needle = get_upper_needle_obj_for_screen(s);
-            lv_obj_t *lower_needle = get_lower_needle_obj_for_screen(s);
-            if (upper_needle) lv_obj_add_flag(upper_needle, LV_OBJ_FLAG_HIDDEN);
-            if (lower_needle) lv_obj_add_flag(lower_needle, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_t *top_icon = get_top_icon_obj_for_screen(s);
-            lv_obj_t *bot_icon = get_bottom_icon_obj_for_screen(s);
-            if (top_icon) lv_obj_add_flag(top_icon, LV_OBJ_FLAG_HIDDEN);
-            if (bot_icon) lv_obj_add_flag(bot_icon, LV_OBJ_FLAG_HIDDEN);
-            dual_number_display_create(s,
-                screen_configs[s].dual_top_font_size, screen_configs[s].dual_top_font_color,
-                screen_configs[s].dual_bottom_font_size, screen_configs[s].dual_bottom_font_color,
-                (strcmp(screen_configs[s].background_path, "Custom Color") == 0) ? screen_configs[s].number_bg_color : "");
-            Serial.printf("[APPLY_ONE] s=%d DUAL created, invalidating screen\n", s);
-            lv_obj_invalidate(get_screen_obj(s));
-            any = true;
-        } else if (screen_configs[s].display_type == DISPLAY_TYPE_QUAD) {
-            Serial.printf("[APPLY_ONE] s=%d → QUAD\n", s);
-            number_display_destroy(s);
-            dual_number_display_destroy(s);
-            gauge_number_display_destroy(s);
-            graph_display_destroy(s);
-            lv_obj_t *upper_needle = get_upper_needle_obj_for_screen(s);
-            lv_obj_t *lower_needle = get_lower_needle_obj_for_screen(s);
-            if (upper_needle) lv_obj_add_flag(upper_needle, LV_OBJ_FLAG_HIDDEN);
-            if (lower_needle) lv_obj_add_flag(lower_needle, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_t *top_icon = get_top_icon_obj_for_screen(s);
-            lv_obj_t *bot_icon = get_bottom_icon_obj_for_screen(s);
-            if (top_icon) lv_obj_add_flag(top_icon, LV_OBJ_FLAG_HIDDEN);
-            if (bot_icon) lv_obj_add_flag(bot_icon, LV_OBJ_FLAG_HIDDEN);
-            quad_number_display_create(s,
-                screen_configs[s].quad_tl_font_size, screen_configs[s].quad_tl_font_color,
-                screen_configs[s].quad_tr_font_size, screen_configs[s].quad_tr_font_color,
-                screen_configs[s].quad_bl_font_size, screen_configs[s].quad_bl_font_color,
-                screen_configs[s].quad_br_font_size, screen_configs[s].quad_br_font_color,
-                (strcmp(screen_configs[s].background_path, "Custom Color") == 0) ? screen_configs[s].number_bg_color : "");
-            Serial.printf("[APPLY_ONE] s=%d QUAD created, invalidating screen\n", s);
-            lv_obj_invalidate(get_screen_obj(s));
-            any = true;
-        } else if (screen_configs[s].display_type == DISPLAY_TYPE_GAUGE_NUMBER) {
-            ESP_LOGI(TAG_UIHOT, "[GAUGE_NUM] Handling screen=%d as GAUGE_NUMBER", s);
-            number_display_destroy(s);
-            dual_number_display_destroy(s);
-            quad_number_display_destroy(s);
-            graph_display_destroy(s);
-            lv_obj_t *lower_needle = get_lower_needle_obj_for_screen(s);
-            if (lower_needle) lv_obj_add_flag(lower_needle, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_t *bot = get_bottom_icon_obj_for_screen(s);
-            if (bot) lv_obj_add_flag(bot, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_t *top_icon = get_top_icon_obj_for_screen(s);
-            const char *p = screen_configs[s].icon_paths[0];
-            ESP_LOGI(TAG_UIHOT, "[GAUGE_NUM] screen=%d icon_paths[0]=%p, value='%s', len=%d",
-                s, p, (p ? p : "NULL"), (p ? strlen(p) : -1));
-            if (top_icon) {
-                if (p && p[0] != '\0') {
-                    lv_img_set_src(top_icon, p);
-                    lv_obj_set_style_img_opa(top_icon, LV_OPA_COVER, 0);
-                    lv_obj_set_size(top_icon, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-                    lv_obj_align(top_icon, LV_ALIGN_CENTER, 0, -70);
-                    lv_obj_clear_flag(top_icon, LV_OBJ_FLAG_HIDDEN);
-                } else {
-                    lv_obj_set_style_img_opa(top_icon, LV_OPA_TRANSP, 0);
-                    lv_obj_add_flag(top_icon, LV_OBJ_FLAG_HIDDEN);
-                    lv_obj_set_pos(top_icon, -5000, -5000);
-                    lv_obj_set_size(top_icon, 0, 0);
-                }
-            }
-            gauge_number_display_create(s,
-                screen_configs[s].gauge_num_center_font_size,
-                screen_configs[s].gauge_num_center_font_color);
-            Serial.printf("[APPLY_ONE] s=%d GAUGE_NUMBER created, invalidating screen\n", s);
-            lv_obj_invalidate(get_screen_obj(s));
-            if (top_icon && (!p || p[0] == '\0')) {
-                if (!lv_obj_has_flag(top_icon, LV_OBJ_FLAG_HIDDEN))
-                    lv_obj_add_flag(top_icon, LV_OBJ_FLAG_HIDDEN);
-            }
-            any = true;
-        } else if (screen_configs[s].display_type == DISPLAY_TYPE_GRAPH) {
-            Serial.printf("[APPLY_ONE] s=%d → GRAPH\n", s);
-            number_display_destroy(s);
-            dual_number_display_destroy(s);
-            quad_number_display_destroy(s);
-            gauge_number_display_destroy(s);
-            graph_display_destroy(s);
-            lv_obj_t *upper_needle = get_upper_needle_obj_for_screen(s);
-            lv_obj_t *lower_needle = get_lower_needle_obj_for_screen(s);
-            if (upper_needle) lv_obj_add_flag(upper_needle, LV_OBJ_FLAG_HIDDEN);
-            if (lower_needle) lv_obj_add_flag(lower_needle, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_t *top_icon = get_top_icon_obj_for_screen(s);
-            lv_obj_t *bot_icon = get_bottom_icon_obj_for_screen(s);
-            if (top_icon) lv_obj_add_flag(top_icon, LV_OBJ_FLAG_HIDDEN);
-            if (bot_icon) lv_obj_add_flag(bot_icon, LV_OBJ_FLAG_HIDDEN);
-            graph_display_create(s);
-            Serial.printf("[APPLY_ONE] s=%d GRAPH created, invalidating screen\n", s);
-            lv_obj_invalidate(get_screen_obj(s));
-            any = true;
-        } else if (screen_configs[s].display_type == DISPLAY_TYPE_COMPASS) {
-            Serial.printf("[APPLY_ONE] s=%d → COMPASS\n", s);
-            number_display_destroy(s);
-            dual_number_display_destroy(s);
-            quad_number_display_destroy(s);
-            gauge_number_display_destroy(s);
-            graph_display_destroy(s);
-            position_display_destroy(s);
-            mark_position_display_destroyed(s + 1);
-            compass_display_create(s);
-            mark_compass_display_created(s + 1);
-            any = true;
-        } else if (screen_configs[s].display_type == DISPLAY_TYPE_POSITION) {
-            Serial.printf("[APPLY_ONE] s=%d → POSITION\n", s);
-            number_display_destroy(s);
-            dual_number_display_destroy(s);
-            quad_number_display_destroy(s);
-            gauge_number_display_destroy(s);
-            graph_display_destroy(s);
-            compass_display_destroy(s);
-            mark_compass_display_destroyed(s + 1);
-            ais_display_destroy(s);
-            anchor_display_destroy(s);
-            position_display_create(s);
-            mark_position_display_created(s + 1);
-            any = true;
-        } else if (screen_configs[s].display_type == DISPLAY_TYPE_ANCHOR) {
-            Serial.printf("[APPLY_ONE] s=%d → ANCHOR\n", s);
-            number_display_destroy(s);
-            dual_number_display_destroy(s);
-            quad_number_display_destroy(s);
-            gauge_number_display_destroy(s);
-            graph_display_destroy(s);
-            compass_display_destroy(s);
-            mark_compass_display_destroyed(s + 1);
-            position_display_destroy(s);
-            mark_position_display_destroyed(s + 1);
-            ais_display_destroy(s);
-            anchor_display_destroy(s);
-            lv_obj_t *upper_needle_anc = get_upper_needle_obj_for_screen(s);
-            lv_obj_t *lower_needle_anc = get_lower_needle_obj_for_screen(s);
-            if (upper_needle_anc) lv_obj_add_flag(upper_needle_anc, LV_OBJ_FLAG_HIDDEN);
-            if (lower_needle_anc) lv_obj_add_flag(lower_needle_anc, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_t *top_icon_anc = get_top_icon_obj_for_screen(s);
-            lv_obj_t *bot_icon_anc = get_bottom_icon_obj_for_screen(s);
-            if (top_icon_anc) lv_obj_add_flag(top_icon_anc, LV_OBJ_FLAG_HIDDEN);
-            if (bot_icon_anc) lv_obj_add_flag(bot_icon_anc, LV_OBJ_FLAG_HIDDEN);
-            anchor_display_create(s);
-            any = true;
-        } else if (screen_configs[s].display_type == DISPLAY_TYPE_AIS) {
-            Serial.printf("[APPLY_ONE] s=%d → AIS\n", s);
-            number_display_destroy(s);
-            dual_number_display_destroy(s);
-            quad_number_display_destroy(s);
-            gauge_number_display_destroy(s);
-            graph_display_destroy(s);
-            compass_display_destroy(s);
-            mark_compass_display_destroyed(s + 1);
-            position_display_destroy(s);
-            mark_position_display_destroyed(s + 1);
-            ais_display_create(s);
-            any = true;
-        } else {
-            // DISPLAY_TYPE_GAUGE (default) — destroy all non-gauge overlays and restore needles
-            Serial.printf("[APPLY_ONE] s=%d → GAUGE\n", s);
-            number_display_destroy(s);
-            dual_number_display_destroy(s);
-            quad_number_display_destroy(s);
-            gauge_number_display_destroy(s);
-            graph_display_destroy(s);
-            compass_display_destroy(s);
-            mark_compass_display_destroyed(s + 1);
-            position_display_destroy(s);
-            mark_position_display_destroyed(s + 1);
-            ais_display_destroy(s);
-            anchor_display_destroy(s);
-            // Restore upper needle visibility (was hidden when switching away from GAUGE)
-            lv_obj_t *upper_needle = get_upper_needle_obj_for_screen(s);
-            if (upper_needle) lv_obj_clear_flag(upper_needle, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_t *lower_needle = get_lower_needle_obj_for_screen(s);
-            if (lower_needle) {
-                if (screen_configs[s].show_bottom)
-                    lv_obj_clear_flag(lower_needle, LV_OBJ_FLAG_HIDDEN);
-                else
-                    lv_obj_add_flag(lower_needle, LV_OBJ_FLAG_HIDDEN);
-            }
-            any = true;
-        }
+        widget_apply_type(s);
+        any = true;
     }
     ESP_LOGI(TAG_UIHOT, "[APPLY_ONE] Completed screen %d", s);
     // Ensure night mode overlay stays on top after new objects were created
