@@ -22,6 +22,7 @@
 #include "network_setup.h"
 #include "screen_config.h"
 #include "screen_render.h"
+#include "marine_fonts.h"
 #include "signalk_config.h"
 #include "audio_alert.h"
 

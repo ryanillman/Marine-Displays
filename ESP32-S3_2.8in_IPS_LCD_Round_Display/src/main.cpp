@@ -14,6 +14,7 @@ bool test_mode = false;
 #include "network_setup.h"
 #include "gauge_config.h"
 #include "needle_style.h"
+#include "marine_fonts.h"
 #include "gauge_number_display.h"
 #include "unit_convert.h"
 #include "version.h"

@@ -18,6 +18,7 @@ bool test_mode = false;
 #include "network_setup.h"
 #include "gauge_config.h"
 #include "needle_style.h"
+#include "marine_fonts.h"
 #include "number_display.h"
 #include "dual_number_display.h"
 #include "quad_number_display.h"
