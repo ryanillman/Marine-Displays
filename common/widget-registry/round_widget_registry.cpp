@@ -35,24 +35,24 @@ static void add_config_path(void *ctx, WidgetPathFn add, const char *path) {
 static bool gauge_read(int screen_num, float *top, float *bottom) {
     switch (screen_num) {
         case 1:
-            *top = get_sensor_value(SCREEN1_RPM);
-            *bottom = get_sensor_value(SCREEN1_COOLANT_TEMP);
+            *top = get_sensor_sample(SCREEN1_RPM).value;
+            *bottom = get_sensor_sample(SCREEN1_COOLANT_TEMP).value;
             return true;
         case 2:
-            *top = get_sensor_value(SCREEN2_RPM);
-            *bottom = get_sensor_value(SCREEN2_FUEL);
+            *top = get_sensor_sample(SCREEN2_RPM).value;
+            *bottom = get_sensor_sample(SCREEN2_FUEL).value;
             return true;
         case 3:
-            *top = get_sensor_value(SCREEN3_COOLANT_TEMP);
-            *bottom = get_sensor_value(SCREEN3_EXHAUST_TEMP);
+            *top = get_sensor_sample(SCREEN3_COOLANT_TEMP).value;
+            *bottom = get_sensor_sample(SCREEN3_EXHAUST_TEMP).value;
             return true;
         case 4:
-            *top = get_sensor_value(SCREEN4_FUEL);
-            *bottom = get_sensor_value(SCREEN4_COOLANT_TEMP);
+            *top = get_sensor_sample(SCREEN4_FUEL).value;
+            *bottom = get_sensor_sample(SCREEN4_COOLANT_TEMP).value;
             return true;
         case 5:
-            *top = get_sensor_value(SCREEN5_OIL_PRESSURE);
-            *bottom = get_sensor_value(SCREEN5_COOLANT_TEMP);
+            *top = get_sensor_sample(SCREEN5_OIL_PRESSURE).value;
+            *bottom = get_sensor_sample(SCREEN5_COOLANT_TEMP).value;
             return true;
         default:
             return false;
@@ -231,7 +231,7 @@ static void gauge_number_run(int screen_num) {
     String description;
     float display_value = NAN;
     if (path.length() > 0) {
-        float raw = get_sensor_value_by_path(path);
+        float raw = get_sensor_sample_by_path(path).value;
         if (!isnan(raw)) {
             unit = get_sensor_unit_by_path(path);
             description = get_sensor_description_by_path(path);

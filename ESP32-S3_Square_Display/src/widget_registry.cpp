@@ -73,7 +73,7 @@ static void read_path(const String &path, HeldField *out) {
         out->bind(0.0f);
         return;
     }
-    float value = get_sensor_value_by_path(path);
+    float value = get_sensor_sample_by_path(path).value;
     out->unit = get_sensor_unit_by_path(path);
     out->description = get_sensor_description_by_path(path);
     if (isnan(value)) {
@@ -185,7 +185,7 @@ extern "C" void force_update_number_display(int screen_num) {
         return;
     }
 
-    float display_value = get_sensor_value_by_path(number_path);
+    float display_value = get_sensor_sample_by_path(number_path).value;
     String unit_str = get_sensor_unit_by_path(number_path);
     String description = get_sensor_description_by_path(number_path);
     display_value = convert_unit(display_value, unit_str, number_path, unit_str);
@@ -207,12 +207,12 @@ static void fill_number(int screen_idx, const String &number_path, HeldField *ou
     }
     float display_value = 0.0f;
     if (sensor_idx >= 0) {
-        display_value = get_sensor_value(sensor_idx);
+        display_value = get_sensor_sample(sensor_idx).value;
         out->unit = get_sensor_unit(sensor_idx);
         out->description = get_sensor_description(sensor_idx);
         display_value = convert_unit(display_value, out->unit, number_path, out->unit);
     } else {
-        display_value = get_sensor_value_by_path(number_path);
+        display_value = get_sensor_sample_by_path(number_path).value;
         out->unit = get_sensor_unit_by_path(number_path);
         out->description = get_sensor_description_by_path(number_path);
         display_value = convert_unit(display_value, out->unit, number_path, out->unit);
@@ -529,7 +529,7 @@ static void compass_read_field(const String &path, HeldField *out) {
         out->bind(NAN);
         return;
     }
-    float value = get_sensor_value_by_path(path);
+    float value = get_sensor_sample_by_path(path).value;
     out->unit = get_sensor_unit_by_path(path);
     out->description = get_sensor_description_by_path(path);
     value = convert_unit(value, out->unit, path, out->unit);
@@ -570,7 +570,7 @@ static void compass_run(int screen_num) {
     int screen_idx = screen_num - 1;
     String hdg_path = String(screen_configs[screen_idx].number_path);
     if (hdg_path.length() == 0) hdg_path = "navigation.headingMagnetic";
-    float hdg_rad = get_sensor_value_by_path(hdg_path);
+    float hdg_rad = get_sensor_sample_by_path(hdg_path).value;
     HeldField heading;
     heading.unit = "";
     heading.description = "";
@@ -642,8 +642,8 @@ static void ais_run(int screen_num) {
     uint16_t sk_port = get_signalk_server_port();
     ais_fetch_targets(sk_ip.c_str(), sk_port);
 
-    float own_cog_rad = get_sensor_value_by_path("navigation.courseOverGroundTrue");
-    float own_sog_ms = get_sensor_value_by_path("navigation.speedOverGround");
+    float own_cog_rad = get_sensor_sample_by_path("navigation.courseOverGroundTrue").value;
+    float own_sog_ms = get_sensor_sample_by_path("navigation.speedOverGround").value;
     FieldView fields[4];
     fields[0].sample = make_sample((float)g_nav_latitude);
     fields[1].sample = make_sample((float)g_nav_longitude);
@@ -679,12 +679,12 @@ static void anchor_create(int s);
 static void anchor_run(int screen_num) {
     if (screen_num < 1 || screen_num > 5) return;
     int screen_idx = screen_num - 1;
-    float cog_rad = get_sensor_value_by_path("navigation.courseOverGroundTrue");
-    float sog_ms = get_sensor_value_by_path("navigation.speedOverGround");
+    float cog_rad = get_sensor_sample_by_path("navigation.courseOverGroundTrue").value;
+    float sog_ms = get_sensor_sample_by_path("navigation.speedOverGround").value;
     float cog_deg = isnan(cog_rad) ? NAN : cog_rad * (180.0f / (float)M_PI);
     float depth_m = NAN;
     if (screen_configs[screen_idx].number_path[0] != '\0') {
-        depth_m = get_sensor_value_by_path(String(screen_configs[screen_idx].number_path));
+        depth_m = get_sensor_sample_by_path(String(screen_configs[screen_idx].number_path)).value;
     }
     FieldView fields[5];
     fields[0].sample = make_sample((float)g_nav_latitude);
@@ -704,24 +704,24 @@ static void anchor_run(int screen_num) {
 static bool gauge_read(int screen_num, float *top, float *bottom) {
     switch (screen_num) {
         case 1:
-            *top = get_sensor_value(SCREEN1_RPM);
-            *bottom = get_sensor_value(SCREEN1_COOLANT_TEMP);
+            *top = get_sensor_sample(SCREEN1_RPM).value;
+            *bottom = get_sensor_sample(SCREEN1_COOLANT_TEMP).value;
             return true;
         case 2:
-            *top = get_sensor_value(SCREEN2_RPM);
-            *bottom = get_sensor_value(SCREEN2_FUEL);
+            *top = get_sensor_sample(SCREEN2_RPM).value;
+            *bottom = get_sensor_sample(SCREEN2_FUEL).value;
             return true;
         case 3:
-            *top = get_sensor_value(SCREEN3_COOLANT_TEMP);
-            *bottom = get_sensor_value(SCREEN3_EXHAUST_TEMP);
+            *top = get_sensor_sample(SCREEN3_COOLANT_TEMP).value;
+            *bottom = get_sensor_sample(SCREEN3_EXHAUST_TEMP).value;
             return true;
         case 4:
-            *top = get_sensor_value(SCREEN4_FUEL);
-            *bottom = get_sensor_value(SCREEN4_COOLANT_TEMP);
+            *top = get_sensor_sample(SCREEN4_FUEL).value;
+            *bottom = get_sensor_sample(SCREEN4_COOLANT_TEMP).value;
             return true;
         case 5:
-            *top = get_sensor_value(SCREEN5_OIL_PRESSURE);
-            *bottom = get_sensor_value(SCREEN5_COOLANT_TEMP);
+            *top = get_sensor_sample(SCREEN5_OIL_PRESSURE).value;
+            *bottom = get_sensor_sample(SCREEN5_COOLANT_TEMP).value;
             return true;
         default:
             return false;
