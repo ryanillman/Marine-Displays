@@ -1,9 +1,9 @@
-// The round and square ST7701 transports are different programs: bit-bang SPI
-// plus a TCA9554 reset on the rounds, versus esp_lcd panel IO plus the v3/v4
-// expander probe on the 4". The vendor-init sources the 4" uses live only in
-// that tree, so the transport is selected at compile time. Porch timings,
-// pixel clock, pixel-clock edge, RGB pins, backlight GPIO, and touch kind
-// come from the board profile.
+// Round and square ST7701 init are different programs. Rounds bit-bang SPI and
+// reset through the TCA9554. The 4" uses esp_lcd panel IO and probes the
+// expander at runtime (TCA9554 at 0x20, or CH32V003 at 0x24). The 4" vendor-init
+// headers exist only in the square and square-NMEA trees, so BOARD_ID_SQUARE
+// selects that transport. Timings, pixel clock, pixel-clock edge, RGB pins,
+// backlight GPIO, and touch kind come from the board profile.
 
 #if defined(BOARD_ID_SQUARE)
 
@@ -683,10 +683,9 @@ void Set_Backlight(uint8_t Light)
 
 #else
 
-// 2.1" and 2.8" share this transport. The command list between chip-select
-// assert and release is the part that differs; it is copied verbatim from
-// each board and chosen by the profile. Touch_Init stays declared here so
-// this file does not include CST820 or GT911.
+// 2.1" and 2.8" share this transport. The profile selects the command list
+// between chip-select assert and release. Touch_Init is declared here so this
+// file does not include the CST820 or GT911 header.
 
 #include "Display_ST7701.h"
 #include "esp_timer.h"

@@ -3,8 +3,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// Hardware contract for one PCB. PR 2 fills the three ST7701 boards.
-// RGB_PARALLEL and ST7305_SPI are named so a later board does not reshape this struct.
+// Hardware description for one PCB. This library drives ST7701_RGB only.
+// RGB_PARALLEL is a generic RGB panel with no vendor init. ST7305_SPI is the reflective LCD.
 
 enum class PanelKind : uint8_t {
   ST7701_RGB = 0,
@@ -78,7 +78,7 @@ struct St7701Link {
 };
 
 struct BoardProfile {
-  const char *id;  // "round21", "round28", "square4", later "rlcd42", "lcd7"
+  const char *id;  // "round21", "round28", "square4"
   uint16_t width;
   uint16_t height;
   bool round_mask;
@@ -97,5 +97,5 @@ struct BoardProfile {
   const St7701Link *st7701;
 };
 
-// A function, not a macro, so the display macros below can call it.
+// A function, not a macro. Display_ST7701.h reads the profile by calling it.
 const BoardProfile *board_profile();

@@ -1,7 +1,7 @@
 #include "board_profile.h"
 
-// RGB data pins are the same on the 2.1", 2.8", and 4" boards. Stored on the
-// profile so a later panel (the 7") can differ without another driver tree.
+// The 2.1", 2.8", and 4" boards share this map. A panel with different pins
+// supplies its own RgbPins; it does not need another copy of the driver.
 static const RgbPins kRgbPins = {
     38, 39, 40, 41, -1,
     {5, 45, 48, 47, 21, 14, 13, 12, 11, 10, 9, 46, 3, 8, 18, 17},

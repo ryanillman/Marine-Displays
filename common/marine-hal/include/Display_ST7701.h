@@ -15,10 +15,9 @@
 
 #include "board_profile.h"
 
-// These names used to be numeric literals in each board tree. They now read
-// the compiled-in profile. They are not integer constant expressions.
-// LVGL_Driver.h defines LVGL_WIDTH from ESP_PANEL_LCD_WIDTH, which is fine:
-// nothing uses these as array bounds.
+// Read the compiled-in profile. Not integer constant expressions.
+// LVGL_Driver.h sets LVGL_WIDTH from ESP_PANEL_LCD_WIDTH, so these must stay
+// usable as expressions. Do not use them as array bounds.
 
 #define LCD_CLK_PIN (board_profile()->st7701->clk_gpio)
 #define LCD_MOSI_PIN (board_profile()->st7701->mosi_gpio)
@@ -73,8 +72,8 @@
 #define ESP_PANEL_LCD_BK_LIGHT_ON_LEVEL (1)
 #define ESP_PANEL_LCD_BK_LIGHT_OFF_LEVEL !ESP_PANEL_LCD_BK_LIGHT_ON_LEVEL
 
-// Square transport only. Defined for every board so the shared driver sees
-// the same switches the 4" tree compiled with. Rounds do not reference them.
+// The square transport in display_st7701.cpp tests these. Round builds
+// include this header and do not reference them.
 #define REMOVE_PANEL_TESTS 1
 #define USE_SWSPI_VENDOR_INIT 0
 
@@ -89,9 +88,8 @@ void ST7701_Init();
 void LCD_Init();
 void LCD_addWindow(uint16_t Xstart, uint16_t Ystart, uint16_t Xend, uint16_t Yend, uint8_t *color);
 
-// Declared on every board. Defined by the square transport only. Nothing in the
-// round trees calls them, and the 4" build already left the RunDiagnostics
-// entry points without a definition.
+// The square transport defines the SDA probes. RunDiagnostics and
+// Display_Diag_HandleChar are declared and have no definition; nothing calls them.
 void Display_RunDiagnostics();
 void Display_RunDiagnosticsLoop(int cycles, uint32_t ms_each);
 void Display_RunDiagnosticsAsync(int cycles, uint32_t ms_each);
