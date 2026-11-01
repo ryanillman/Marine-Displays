@@ -2,7 +2,8 @@
 // reset through the TCA9554. The 4" uses esp_lcd panel IO and probes the
 // expander at runtime (TCA9554 at 0x20, or CH32V003 at 0x24). The 4" vendor-init
 // headers exist only in the square and square-NMEA trees, so BOARD_ID_SQUARE
-// selects that transport. Timings, pixel clock, pixel-clock edge, RGB pins,
+// selects that transport. BOARD_ID_LCD7 is a generic RGB panel: same draw path,
+// no ST7701 commands. Timings, pixel clock, pixel-clock edge, RGB pins,
 // backlight GPIO, and touch kind come from the board profile.
 
 #if defined(BOARD_ID_SQUARE)
@@ -680,6 +681,217 @@ void Set_Backlight(uint8_t Light)
   }
 }
 
+
+#elif defined(BOARD_ID_LCD7)
+
+// Generic 800x480 RGB panel (ST7262). No vendor command list. Backlight is a
+// level on the CH422G, owned by the board file (lcd7_set_backlight).
+
+#include "Display_ST7701.h"
+#include "esp_timer.h"
+#include "esp_heap_caps.h"
+#include <Arduino.h>
+
+extern "C" int ets_printf(const char *fmt, ...);
+void lcd7_set_backlight(bool on);
+
+esp_lcd_panel_handle_t panel_handle = NULL;
+uint8_t LCD_Backlight = 100;
+
+static volatile uint32_t g_vsync_count = 0;
+static volatile uint32_t g_vsync_max_gap_us = 0;
+static volatile uint32_t g_vsync_prev_us = 0;
+
+bool example_on_vsync_event(esp_lcd_panel_handle_t panel, const esp_lcd_rgb_panel_event_data_t *event_data, void *user_data)
+{
+  (void)panel;
+  (void)event_data;
+  (void)user_data;
+  uint32_t now = (uint32_t)esp_timer_get_time();
+  if (g_vsync_prev_us != 0) {
+    uint32_t delta = now - g_vsync_prev_us;
+    if (delta > g_vsync_max_gap_us) g_vsync_max_gap_us = delta;
+  }
+  g_vsync_prev_us = now;
+  g_vsync_count++;
+  return false;
+}
+
+uint32_t get_vsync_count() { return g_vsync_count; }
+uint32_t get_vsync_max_gap_us() { return g_vsync_max_gap_us; }
+void reset_vsync_stats() {
+  g_vsync_count = 0;
+  g_vsync_max_gap_us = 0;
+  g_vsync_prev_us = 0;
+}
+
+void ST7701_Init() {}
+
+void Display_RunDiagnostics() {}
+void Display_RunDiagnosticsLoop(int cycles, uint32_t ms_each) {
+  (void)cycles;
+  (void)ms_each;
+}
+void Display_RunDiagnosticsAsync(int cycles, uint32_t ms_each) {
+  (void)cycles;
+  (void)ms_each;
+}
+esp_err_t Display_SDA_Probe() { return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t Display_SDA_Hold_Test(uint32_t hold_ms) {
+  (void)hold_ms;
+  return ESP_ERR_NOT_SUPPORTED;
+}
+
+static void lcd7_draw_line(const uint16_t *line, int y)
+{
+  esp_lcd_panel_draw_bitmap(panel_handle, 0, y, ESP_PANEL_LCD_WIDTH, y + 1, line);
+}
+
+static void lcd7_fill(uint16_t color)
+{
+  if (!panel_handle) return;
+  const int w = ESP_PANEL_LCD_WIDTH;
+  const int h = ESP_PANEL_LCD_HEIGHT;
+  uint16_t *line = (uint16_t *)heap_caps_malloc((size_t)w * sizeof(uint16_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+  if (!line) line = (uint16_t *)heap_caps_malloc((size_t)w * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+  if (!line) {
+    ets_printf("[LCD7] fill alloc failed\r\n");
+    return;
+  }
+  for (int x = 0; x < w; ++x) line[x] = color;
+  for (int y = 0; y < h; ++y) {
+    lcd7_draw_line(line, y);
+    if ((y & 31) == 0) vTaskDelay(1);
+  }
+  free(line);
+}
+
+// Full-width bars. A 1024-wide panel would show a different stripe pitch.
+static void lcd7_color_bars()
+{
+  if (!panel_handle) return;
+  const uint16_t colors[5] = {0x001F, 0x07E0, 0xF800, 0xFFFF, 0x0000};
+  const int w = ESP_PANEL_LCD_WIDTH;
+  const int h = ESP_PANEL_LCD_HEIGHT;
+  uint16_t *line = (uint16_t *)heap_caps_malloc((size_t)w * sizeof(uint16_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+  if (!line) line = (uint16_t *)heap_caps_malloc((size_t)w * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+  if (!line) {
+    ets_printf("[LCD7] color bar alloc failed\r\n");
+    return;
+  }
+  const int seg = w / 5;
+  for (int x = 0; x < w; ++x) {
+    int band = (seg > 0) ? (x / seg) : 0;
+    if (band > 4) band = 4;
+    line[x] = colors[band];
+  }
+  ets_printf("[LCD7] color bars %ux%u\r\n", (unsigned)w, (unsigned)h);
+  Serial.printf("[LCD7] color bars %ux%u\n", (unsigned)w, (unsigned)h);
+  for (int y = 0; y < h; ++y) {
+    lcd7_draw_line(line, y);
+    if ((y & 31) == 0) vTaskDelay(1);
+  }
+  free(line);
+  vTaskDelay(pdMS_TO_TICKS(2000));
+  lcd7_fill(0x0000);
+}
+
+void LCD_Init()
+{
+  esp_lcd_rgb_panel_config_t rgb_config = {
+    .clk_src = LCD_CLK_SRC_PLL160M,
+    .timings = {
+      .pclk_hz = ESP_PANEL_LCD_RGB_TIMING_FREQ_HZ,
+      .h_res = ESP_PANEL_LCD_WIDTH,
+      .v_res = ESP_PANEL_LCD_HEIGHT,
+      .hsync_pulse_width = ESP_PANEL_LCD_RGB_TIMING_HPW,
+      .hsync_back_porch = ESP_PANEL_LCD_RGB_TIMING_HBP,
+      .hsync_front_porch = ESP_PANEL_LCD_RGB_TIMING_HFP,
+      .vsync_pulse_width = ESP_PANEL_LCD_RGB_TIMING_VPW,
+      .vsync_back_porch = ESP_PANEL_LCD_RGB_TIMING_VBP,
+      .vsync_front_porch = ESP_PANEL_LCD_RGB_TIMING_VFP,
+      .flags = {
+        .hsync_idle_low = 0,
+        .vsync_idle_low = 0,
+        .de_idle_high = 0,
+        .pclk_active_neg = ESP_PANEL_LCD_RGB_PCLK_ACTIVE_NEG,
+        .pclk_idle_high = 0,
+      },
+    },
+    .data_width = ESP_PANEL_LCD_RGB_DATA_WIDTH,
+    .sram_trans_align = 4,
+    .psram_trans_align = 64,
+    .hsync_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_HSYNC,
+    .vsync_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_VSYNC,
+    .de_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_DE,
+    .pclk_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_PCLK,
+    .data_gpio_nums = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
+    .disp_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_DISP,
+    .on_frame_trans_done = NULL,
+    .user_ctx = NULL,
+    .flags = {
+      .disp_active_low = 0,
+      .relax_on_idle = 0,
+      .fb_in_psram = 1,
+    },
+  };
+
+  rgb_config.data_gpio_nums[0] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA0;
+  rgb_config.data_gpio_nums[1] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA1;
+  rgb_config.data_gpio_nums[2] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA2;
+  rgb_config.data_gpio_nums[3] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA3;
+  rgb_config.data_gpio_nums[4] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA4;
+  rgb_config.data_gpio_nums[5] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA5;
+  rgb_config.data_gpio_nums[6] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA6;
+  rgb_config.data_gpio_nums[7] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA7;
+  rgb_config.data_gpio_nums[8] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA8;
+  rgb_config.data_gpio_nums[9] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA9;
+  rgb_config.data_gpio_nums[10] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA10;
+  rgb_config.data_gpio_nums[11] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA11;
+  rgb_config.data_gpio_nums[12] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA12;
+  rgb_config.data_gpio_nums[13] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA13;
+  rgb_config.data_gpio_nums[14] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA14;
+  rgb_config.data_gpio_nums[15] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA15;
+
+  esp_err_t err = esp_lcd_new_rgb_panel(&rgb_config, &panel_handle);
+  if (err != ESP_OK || !panel_handle) {
+    ets_printf("[LCD7] esp_lcd_new_rgb_panel failed: 0x%x\r\n", (unsigned)err);
+    return;
+  }
+  esp_lcd_panel_reset(panel_handle);
+  esp_lcd_panel_init(panel_handle);
+  esp_lcd_panel_disp_on_off(panel_handle, true);
+  ets_printf("[LCD7] panel up PSRAM free=%u\r\n",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+  lcd7_color_bars();
+}
+
+void LCD_addWindow(uint16_t Xstart, uint16_t Ystart, uint16_t Xend, uint16_t Yend, uint8_t *color)
+{
+  // Caller passes panel coordinates. The 480-wide UI adds the side-bar offset
+  // before it gets here, so a full-width test can still draw at x = 0.
+  Xend = Xend + 1;
+  Yend = Yend + 1;
+  if (Xend >= ESP_PANEL_LCD_WIDTH) Xend = ESP_PANEL_LCD_WIDTH;
+  if (Yend >= ESP_PANEL_LCD_HEIGHT) Yend = ESP_PANEL_LCD_HEIGHT;
+  if (!panel_handle) return;
+  esp_lcd_panel_draw_bitmap(panel_handle, Xstart, Ystart, Xend, Yend, color);
+}
+
+void Backlight_Init()
+{
+  lcd7_set_backlight(LCD_Backlight > 0);
+}
+
+void Set_Backlight(uint8_t Light)
+{
+  if (Light > Backlight_MAX) {
+    printf("Set Backlight parameters in the range of 0 to 100 \r\n");
+    return;
+  }
+  LCD_Backlight = Light;
+  lcd7_set_backlight(Light > 0);
+}
 
 #else
 

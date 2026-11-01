@@ -47,10 +47,30 @@ static const BoardProfile kProfile = {
     true, false, true, false, &kSt7701,
 };
 
+#elif defined(BOARD_ID_LCD7)
+
+// ESP32-S3-Touch-LCD-7 (800x480). These pins are not the 4" map above.
+// Waveshare demo: 16 MHz, porches 4/8/8 and 4/8/8, data clocked on the falling edge.
+// DATA0 is GPIO14 (B3). EXIO5 stays low so USB keeps GPIO19/20 and CAN stays off.
+static const RgbPins kLcd7Pins = {
+    46, 3, 5, 7, -1,
+    {14, 38, 18, 17, 10, 39, 0, 45, 48, 47, 21, 1, 2, 42, 41, 40},
+};
+static const RgbTiming kTiming = {
+    16 * 1000 * 1000, 4, 8, 8, 4, 8, 8, 1, 16, 16, 2, 800 * 10,
+};
+static const BoardProfile kProfile = {
+    "lcd7", 800, 480, false, true, PanelKind::RGB_PARALLEL, &kTiming, &kLcd7Pins,
+    TouchKind::GT911, ExpanderKind::CH422G, SdKind::SPI, BacklightKind::EXPANDER_LEVEL,
+    false, false, false, false, nullptr,
+};
+
 #else
-#error "Define BOARD_ID_ROUND21, BOARD_ID_ROUND28, or BOARD_ID_SQUARE"
+#error "Define BOARD_ID_ROUND21, BOARD_ID_ROUND28, BOARD_ID_SQUARE, or BOARD_ID_LCD7"
 #endif
 
 const BoardProfile *board_profile() {
   return &kProfile;
 }
+
+__attribute__((weak)) void setup_parallel_rgb_board() {}

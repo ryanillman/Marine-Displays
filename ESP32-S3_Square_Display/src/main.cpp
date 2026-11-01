@@ -276,6 +276,13 @@ void setup() {
     // Immediate hardware UART0 marker - visible on CH343 even before USB CDC comes up
     ets_printf("\r\n\r\n*** SETUP() START ***\r\n");
 
+    // The 7" is a parallel RGB panel. Its expander, touch reset, and backlight
+    // are not the 4" sequence below. The shared tail (preferences, LVGL, portal)
+    // is the same program.
+    if (board_profile()->panel == PanelKind::RGB_PARALLEL) {
+        setup_parallel_rgb_board();
+    } else {
+
     // CRITICAL: silence the buzzer ASAP and configure IO expander.
     // V3 (TCA9554): Set all outputs, PIN6 LOW.
     // V4 (CH32V003): Set OUTPUT=0xFF (all high), DIRECTION=0x3A (BEE_EN as input = safe).
@@ -319,7 +326,9 @@ void setup() {
     ets_printf("*** IO expander configured (board %s) ***\r\n", is_board_v4() ? "v4" : "v3");
 
     // Serial for debugging - with timeout
-    Serial.setTxTimeoutMs(0);  // Non-blocking serial
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
+    Serial.setTxTimeoutMs(0);  // USB CDC only. UART Serial has no such call.
+#endif
     Serial.begin(115200);
     delay(500);
 
@@ -427,7 +436,7 @@ void setup() {
 
     // Ensure backlight is on for normal operation
     Set_Backlight(100);
-
+    } // end of the 4" hardware bring-up
 
     
     // Load persisted preferences BEFORE initializing the UI so dynamic image paths
@@ -524,7 +533,11 @@ void setup() {
     Serial.println(WiFi.SSID());
     Serial.print("WiFi IP: ");
     Serial.println(WiFi.localIP());
-    Serial.println("Navigate to http://esp32-squaredisplay.local or check your router for device IP");
+    if (board_profile()->panel == PanelKind::RGB_PARALLEL) {
+        Serial.println("Setup AP is ESP32-LCD7 (password 12345678) when WiFi is not configured.");
+    } else {
+        Serial.println("Navigate to http://esp32-squaredisplay.local or check your router for device IP");
+    }
     Serial.flush();
 }
 
@@ -986,7 +999,9 @@ void loop() {
     // Skipped while a beep pattern owns the pin. This path forces it off,
     // which would clip the 200 ms on-pulse.
     buzzer_alert_service();
-    if (!buzzer_alert_busy()) {
+    // The CH422G has no buzzer pin. Writing the 4" expander shadow would
+    // clobber backlight, touch reset, and the USB/CAN select.
+    if (board_profile()->expander != ExpanderKind::CH422G && !buzzer_alert_busy()) {
         static unsigned long last_buz_maintain = 0;
         unsigned long now_m = millis();
         if (is_board_v4()) {
