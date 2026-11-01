@@ -3,8 +3,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// Hardware description for one PCB. This library drives ST7701_RGB only.
-// RGB_PARALLEL is a generic RGB panel with no vendor init. ST7305_SPI is the reflective LCD.
+// Hardware description for one PCB. ST7701_RGB boards run the vendor init in
+// display_st7701.cpp. RGB_PARALLEL is a generic RGB panel with no vendor init.
+// ST7305_SPI is the reflective LCD and is not driven here.
 
 enum class PanelKind : uint8_t {
   ST7701_RGB = 0,
@@ -78,7 +79,7 @@ struct St7701Link {
 };
 
 struct BoardProfile {
-  const char *id;  // "round21", "round28", "square4"
+  const char *id;  // "round21", "round28", "square4", "lcd7"
   uint16_t width;
   uint16_t height;
   bool round_mask;
@@ -99,3 +100,8 @@ struct BoardProfile {
 
 // A function, not a macro. Display_ST7701.h reads the profile by calling it.
 const BoardProfile *board_profile();
+
+// ST7701 boards link the weak no-op. A parallel-RGB board supplies the body
+// that brings up its expander, panel, and touch. Square setup() calls it
+// only when the profile says the panel is RGB_PARALLEL.
+void setup_parallel_rgb_board();

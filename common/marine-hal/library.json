@@ -1,7 +1,7 @@
 {
   "name": "marine-hal",
   "version": "1.0.0",
-  "description": "ST7701 RGB panel driver and board profiles for the Marine Displays color boards. The RLCD does not link this library.",
+  "description": "RGB panel driver and board profiles for the Marine Displays color boards. The RLCD does not link this library.",
   "license": "PolyForm-Noncommercial-1.0.0",
   "frameworks": "arduino",
   "platforms": "espressif32",

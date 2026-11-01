@@ -1,6 +1,7 @@
 #include "ui_Settings.h"
 #include "ui.h"
 #include "Display_ST7701.h"
+#include "board_profile.h"
 #include "TCA9554PWR.h"  // For buzzer control
 #include <WiFi.h>
 
@@ -80,6 +81,8 @@ extern "C" bool buzzer_alert_busy(void) {
 }
 
 extern "C" void buzzer_alert_service(void) {
+    // No buzzer on the CH422G board. Leave its outputs alone.
+    if (board_profile()->expander == ExpanderKind::CH422G) return;
     if (beep_phase == BEEP_IDLE) return;
     if ((int32_t)(millis() - beep_until_ms) < 0) return;
 
@@ -100,6 +103,7 @@ extern "C" void buzzer_alert_service(void) {
 }
 
 extern "C" void trigger_buzzer_alert() {
+    if (board_profile()->expander == ExpanderKind::CH422G) return;
     if (buzzer_mode == 0) return;
     if (beep_phase != BEEP_IDLE) return;
     printf("trigger_buzzer_alert() called, buzzer_mode=%d\n", buzzer_mode);
