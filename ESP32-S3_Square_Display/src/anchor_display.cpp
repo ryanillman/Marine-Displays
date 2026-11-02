@@ -18,8 +18,8 @@
 #include "anchor_display.h"
 #include "screen_config_c_api.h"
 #include "signalk_config.h"
-#include "ui_Settings.h"
 #include <math.h>
+#include <string.h>
 #include <Preferences.h>
 #include <Arduino.h>
 
@@ -108,6 +108,21 @@ struct AnchorState {
 };
 
 static AnchorState g_state[NUM_SCREENS];
+
+// Last picture sent to the canvas. Filling 480x390 every poll rewrites PSRAM
+// while the 7" scan is reading it, which tears the glass and stalls swipes.
+struct AnchorPicture {
+    float lat, lon, cog, depth;
+    float anchor_lat, anchor_lon, radius_m, max_drift_m;
+    uint16_t track_head;
+    uint16_t track_count;
+    uint8_t armed;
+    uint8_t has_gps;
+    uint8_t has_anchor;
+    uint8_t drawn;
+};
+
+static AnchorPicture g_picture[NUM_SCREENS];
 
 // ── Haversine distance (metres) ──────────────────────────────────────────────
 static float haversine_m(float lat1, float lon1, float lat2, float lon2) {
@@ -240,6 +255,8 @@ static void anchor_save(int n) {
     }
 }
 
+static bool g_anchor_loaded[NUM_SCREENS] = {};
+
 static void anchor_load(int n) {
     char ns[16];
     snprintf(ns, sizeof(ns), "anchor_%d", n);
@@ -256,6 +273,27 @@ static void anchor_load(int n) {
         g_state[n].radius_m    = 30.0f;
         g_state[n].alarm_armed = false;
     }
+    g_anchor_loaded[n] = true;
+}
+
+static void anchor_ensure_loaded(int n) {
+    if (n < 0 || n >= NUM_SCREENS || g_anchor_loaded[n]) return;
+    anchor_load(n);
+}
+
+// Armed with no position is an alarm, including while another screen is in front.
+// A set anchor with the boat outside the radius is the drift alarm.
+bool anchor_watch_alarm_due(int n) {
+    if (n < 0 || n >= NUM_SCREENS) return false;
+    if (screen_configs[n].display_type != DISPLAY_TYPE_ANCHOR) return false;
+    anchor_ensure_loaded(n);
+    if (!g_state[n].alarm_armed) return false;
+    if (!nav_position_valid()) return true;
+    if (isnan(g_state[n].anchor_lat) || isnan(g_state[n].anchor_lon)) return false;
+    float lat = g_nav_latitude;
+    float lon = g_nav_longitude;
+    float dist = haversine_m(lat, lon, g_state[n].anchor_lat, g_state[n].anchor_lon);
+    return dist > g_state[n].radius_m;
 }
 
 // ── Update radius label ───────────────────────────────────────────────────────
@@ -606,17 +644,28 @@ void anchor_display_update(int n, float own_lat, float own_lon,
         dist_m = haversine_m(own_lat, own_lon, g_state[n].anchor_lat, g_state[n].anchor_lon);
         brg_to_anchor = bearing_deg(own_lat, own_lon, g_state[n].anchor_lat, g_state[n].anchor_lon);
         if (dist_m > g_state[n].max_drift_m) g_state[n].max_drift_m = dist_m;
-
-        // Trigger alarm if armed and outside radius — respect cooldown from buzzer settings
-        if (g_state[n].alarm_armed && dist_m > g_state[n].radius_m) {
-            uint32_t now_ms = millis();
-            uint32_t cooldown_ms = (buzzer_cooldown_sec == 0) ? 0 : (uint32_t)buzzer_cooldown_sec * 1000UL;
-            if (now_ms - g_state[n].last_alarm_ms >= cooldown_ms) {
-                g_state[n].last_alarm_ms = now_ms;
-                trigger_buzzer_alert();
-            }
-        }
     }
+
+    AnchorPicture picture;
+    memset(&picture, 0, sizeof(picture));
+    picture.lat = own_lat;
+    picture.lon = own_lon;
+    picture.cog = cog_deg;
+    picture.depth = depth_m;
+    picture.anchor_lat = g_state[n].anchor_lat;
+    picture.anchor_lon = g_state[n].anchor_lon;
+    picture.radius_m = g_state[n].radius_m;
+    picture.max_drift_m = g_state[n].max_drift_m;
+    picture.track_head = g_state[n].track_head;
+    picture.track_count = g_state[n].track_count;
+    picture.armed = g_state[n].alarm_armed ? 1 : 0;
+    picture.has_gps = has_gps ? 1 : 0;
+    picture.has_anchor = has_anchor ? 1 : 0;
+    picture.drawn = 1;
+    if (g_picture[n].drawn && memcmp(&g_picture[n], &picture, sizeof(picture)) == 0) {
+        return;
+    }
+    g_picture[n] = picture;
 
     // ── Redraw canvas ────────────────────────────────────────────────────────
     lv_canvas_fill_bg(a_canvas[n], lv_color_make(8, 12, 20), LV_OPA_COVER);
@@ -723,6 +772,7 @@ void anchor_display_destroy(int n) {
     a_radius_lbl[n] = NULL;
     a_depth_lbl[n]  = NULL;
     a_depth_lbl_used[n] = false;
+    memset(&g_picture[n], 0, sizeof(g_picture[n]));
     // Track PSRAM buffers are intentionally kept across destroy/create
     // so the track survives a display type change.
     a_created[n] = false;

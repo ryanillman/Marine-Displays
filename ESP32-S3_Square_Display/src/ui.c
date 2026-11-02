@@ -70,6 +70,20 @@ int ui_get_current_screen(void)
 }
 
 // Navigate to next screen (swipe left)
+// Swipes keep the image cache. Re-decoding the PNG icons from SD on every
+// swipe stalled the slide for seconds; the cache is dropped when a config
+// save re-applies screen visuals instead (apply_screen_visuals_for_one).
+//
+// The 7" renders a full 480x480 frame in about half a second, so a 300 ms
+// slide shows one torn frame. It switches screens without the slide.
+#if defined(BOARD_ID_LCD7)
+#define SWIPE_ANIM(a) LV_SCR_LOAD_ANIM_NONE
+#define SWIPE_ANIM_MS 0
+#else
+#define SWIPE_ANIM(a) (a)
+#define SWIPE_ANIM_MS 300
+#endif
+
 void ui_next_screen(void)
 {
     lv_obj_t* active = lv_scr_act();
@@ -83,13 +97,11 @@ void ui_next_screen(void)
     else next = ui_Screen1;
     
     if (next) {
-        // Invalidate all cached images before switching screens to prevent stale images
-        lv_img_cache_invalidate_src(NULL);
         // Force full re-render of the incoming screen: objects created on inactive
         // screens may have had their dirty flags consumed without actually being
         // rendered, so we must re-mark the whole screen dirty before the animation.
         lv_obj_invalidate(next);
-        lv_scr_load_anim(next, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
+        lv_scr_load_anim(next, SWIPE_ANIM(LV_SCR_LOAD_ANIM_MOVE_LEFT), SWIPE_ANIM_MS, 0, false);
         // Defer needle updates to the main loop (runs every 100ms)
         // Calling update_needles_for_screen() here raced with LVGL screen
         // load/animation and caused visual update issues. The periodic
@@ -111,11 +123,9 @@ void ui_prev_screen(void)
     else prev = ui_Screen1;
     
     if (prev) {
-        // Invalidate all cached images before switching screens to prevent stale images
-        lv_img_cache_invalidate_src(NULL);
         // Force full re-render of the incoming screen (same reason as ui_next_screen)
         lv_obj_invalidate(prev);
-        lv_scr_load_anim(prev, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
+        lv_scr_load_anim(prev, SWIPE_ANIM(LV_SCR_LOAD_ANIM_MOVE_RIGHT), SWIPE_ANIM_MS, 0, false);
         // Defer needle updates to the main loop (runs every 100ms)
         // Calling update_needles_for_screen() here raced with LVGL screen
         // load/animation and caused visual update issues. The periodic

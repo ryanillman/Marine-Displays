@@ -4,24 +4,36 @@
 #include <stdint.h>
 
 // One measured field passed into a widget.
-// valid stays true until a source can say the field has no sample.
-// age_ms stays 0 until a source records when the value was read.
-// value is the number the glass already uses, after unit conversion when
-// the widget converts. NaN still means what that widget does with NaN today
-// (drawn as 0, held as the last angle, or skipped).
+// valid is false until a finite sample has arrived, and whenever that
+// source is down or the value was not a finite number. age_ms is the time
+// since that finite sample. value is the number the glass draws when valid,
+// after unit conversion when the widget converts.
 struct Sample {
     float value;
     uint32_t age_ms;
     bool valid;
 };
 
-// Unit and description are the strings looked up with the sample.
-// They are not part of Sample. Pointers live only for the update call.
+// Pointers live only for the update call.
+// source names who produced the sample ("Signal K"). path is the subscription
+// the failed field shows, so the dead reading can be traced.
 struct FieldView {
     Sample sample;
     const char *unit;
     const char *description;
+    const char *source;
+    const char *path;
 };
+
+inline void field_view_clear(FieldView *field) {
+    field->sample.value = 0.0f;
+    field->sample.age_ms = 0;
+    field->sample.valid = false;
+    field->unit = "";
+    field->description = "";
+    field->source = "";
+    field->path = "";
+}
 
 enum { WIDGET_MAX_FIELDS = 8 };
 

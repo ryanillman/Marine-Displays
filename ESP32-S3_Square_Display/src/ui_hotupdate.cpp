@@ -155,6 +155,8 @@ bool apply_icons_for_screen(int s) {
 bool apply_screen_visuals_for_one(int s) {
     Serial.printf("[APPLY_ONE] s=%d display_type=%d\n", s, screen_configs[s].display_type);
     Serial.flush();
+    // An uploaded icon can reuse a path. Drop decoded images here, not on swipes.
+    lv_img_cache_invalidate_src(NULL);
     bool any = false;
     {
         bool a = apply_background_for_screen(s);

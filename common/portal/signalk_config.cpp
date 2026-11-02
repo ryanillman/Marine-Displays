@@ -53,18 +53,20 @@ struct PsramAllocator {
     }
 };
 
-// Global array to hold all sensor values (10 parameters)
+// Empty until a finite sample arrives. A seeded 0 RPM or 40°C is a reading.
 float g_sensor_values[TOTAL_PARAMS] = {
-    0,        // SCREEN1_RPM
-    313.15,   // SCREEN1_COOLANT_TEMP
-    0,        // SCREEN2_RPM
-    50.0,     // SCREEN2_FUEL
-    313.15,   // SCREEN3_COOLANT_TEMP
-    373.15,   // SCREEN3_EXHAUST_TEMP
-    50.0,     // SCREEN4_FUEL
-    313.15,   // SCREEN4_COOLANT_TEMP
-    2.0,      // SCREEN5_OIL_PRESSURE
-    313.15    // SCREEN5_COOLANT_TEMP
+    NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN
+};
+
+enum { SLOT_EMPTY = 0, SLOT_GOOD = 1, SLOT_BAD = 2 };
+
+static uint8_t g_slot_state[TOTAL_PARAMS] = {0};
+static uint32_t g_slot_ms[TOTAL_PARAMS] = {0};
+
+struct PathSample {
+    float value;
+    uint8_t state;
+    uint32_t ms;
 };
 
 // Mutex for thread-safe access to sensor variables
@@ -82,7 +84,7 @@ char g_sk_datetime[32]         = {0};  // SK writes here; RTC sync reads it
 
 // Extended storage for paths beyond the gauge array (number displays, dual displays)
 // Uses PSRAM allocator to keep map nodes out of iRAM.
-static PsramMap<String, float> extended_sensor_values;
+static PsramMap<String, PathSample> extended_sensor_values;
 static PsramMap<String, String> extended_sensor_units;
 static PsramMap<String, String> extended_sensor_descriptions;
 
@@ -98,6 +100,11 @@ static bool signalk_enabled = false;
 // signalk_task (Core 0) sees this, disconnects the WS, and suspends reconnects
 // until the flag is cleared on save — freeing the ~22KB WS receive buffer.
 static volatile bool g_signalk_ws_paused = false;
+// Set from the socket task when the stream is up. A quiet period:0 value
+// stays good while this is true. Disconnect, pause, and Wi-Fi loss clear it.
+static volatile bool g_link_up = false;
+static volatile uint8_t g_nav_state = SLOT_EMPTY;
+static volatile uint32_t g_nav_ms = 0;
 
 // Set by resume_signalk_ws() to tell signalk_task to reconnect once iRAM > 18KB.
 // signalk_task clears both this and g_signalk_ws_paused when the threshold is met.
@@ -168,29 +175,41 @@ static String build_signalk_url(const String &path) {
     return String("/signalk/v1/api/vessels/self/") + cleaned;
 }
 
-// Thread-safe getter for any sensor value
+static bool signalk_source_live_unlocked() {
+    if (!signalk_enabled) return false;
+    if (g_signalk_ws_paused) return false;
+    if (WiFi.status() != WL_CONNECTED) return false;
+    return g_link_up;
+}
+
+static Sample sample_from_locked(float value, uint8_t state, uint32_t stamp, bool locked) {
+    Sample sample;
+    sample.value = NAN;
+    sample.age_ms = 0;
+    sample.valid = false;
+    if (!locked) return sample;
+    if (!signalk_source_live_unlocked()) return sample;
+    if (state != SLOT_GOOD || !isfinite(value)) return sample;
+    sample.value = value;
+    sample.age_ms = millis() - stamp;
+    sample.valid = true;
+    return sample;
+}
+
+// Thread-safe getter for any sensor value. NAN when that slot has no live sample.
 float get_sensor_value(int index) {
-    if (index < 0 || index >= TOTAL_PARAMS) return 0;
-    
-    float val = 0;
-    if (sensor_mutex != NULL && xSemaphoreTake(sensor_mutex, pdMS_TO_TICKS(50))) {
-        val = g_sensor_values[index];
-        xSemaphoreGive(sensor_mutex);
-    }
-    return val;
+    Sample sample = get_sensor_sample(index);
+    return sample.valid ? sample.value : NAN;
 }
 
 // Thread-safe setter for any sensor value
+static void store_slot_locked(int index, float value, bool good);
+
 void set_sensor_value(int index, float value) {
     if (index < 0 || index >= TOTAL_PARAMS) return;
-    
+
     if (sensor_mutex != NULL && xSemaphoreTake(sensor_mutex, pdMS_TO_TICKS(50))) {
-        float old = g_sensor_values[index];
-        if (old != value) {
-            g_sensor_values[index] = value;
-        } else {
-            // No change; keep as-is
-        }
+        store_slot_locked(index, value, isfinite(value));
         xSemaphoreGive(sensor_mutex);
     }
 }
@@ -227,24 +246,8 @@ void set_sensor_metadata(int index, const char* unit, const char* description) {
 
 // Get sensor value by path (for number and dual displays that may use non-gauge paths)
 float get_sensor_value_by_path(const String& path) {
-    if (path.length() == 0) return NAN;
-    
-    // First check if it's in the gauge paths array
-    for (int i = 0; i < TOTAL_PARAMS; i++) {
-        if (signalk_paths[i] == path) {
-            return get_sensor_value(i);
-        }
-    }
-    
-    // Check extended storage
-    if (sensor_mutex != NULL && xSemaphoreTake(sensor_mutex, pdMS_TO_TICKS(50))) {
-        auto it = extended_sensor_values.find(path);
-        float val = (it != extended_sensor_values.end()) ? it->second : NAN;
-        xSemaphoreGive(sensor_mutex);
-        return val;
-    }
-    
-    return NAN;
+    Sample sample = get_sensor_sample_by_path(path);
+    return sample.valid ? sample.value : NAN;
 }
 
 // Get sensor unit by path
@@ -297,19 +300,103 @@ String get_sensor_description_by_path(const String& path) {
 
 
 Sample get_sensor_sample(int index) {
-    Sample sample;
-    sample.value = get_sensor_value(index);
-    sample.age_ms = 0;
-    sample.valid = true;
-    return sample;
+    if (index < 0 || index >= TOTAL_PARAMS) {
+        Sample sample;
+        sample.value = NAN;
+        sample.age_ms = 0;
+        sample.valid = false;
+        return sample;
+    }
+    float value = NAN;
+    uint8_t state = SLOT_EMPTY;
+    uint32_t stamp = 0;
+    bool locked = false;
+    if (sensor_mutex != NULL && xSemaphoreTake(sensor_mutex, pdMS_TO_TICKS(50))) {
+        value = g_sensor_values[index];
+        state = g_slot_state[index];
+        stamp = g_slot_ms[index];
+        locked = true;
+        xSemaphoreGive(sensor_mutex);
+    }
+    return sample_from_locked(value, state, stamp, locked);
 }
 
 Sample get_sensor_sample_by_path(const String& path) {
-    Sample sample;
-    sample.value = get_sensor_value_by_path(path);
-    sample.age_ms = 0;
-    sample.valid = true;
-    return sample;
+    Sample missing;
+    missing.value = NAN;
+    missing.age_ms = 0;
+    missing.valid = false;
+    if (path.length() == 0) return missing;
+
+    for (int i = 0; i < TOTAL_PARAMS; i++) {
+        if (signalk_paths[i] == path) return get_sensor_sample(i);
+    }
+
+    float value = NAN;
+    uint8_t state = SLOT_EMPTY;
+    uint32_t stamp = 0;
+    bool locked = false;
+    if (sensor_mutex != NULL && xSemaphoreTake(sensor_mutex, pdMS_TO_TICKS(50))) {
+        auto it = extended_sensor_values.find(path);
+        if (it != extended_sensor_values.end()) {
+            value = it->second.value;
+            state = it->second.state;
+            stamp = it->second.ms;
+        }
+        locked = true;
+        xSemaphoreGive(sensor_mutex);
+    }
+    return sample_from_locked(value, state, stamp, locked);
+}
+
+bool nav_position_valid() {
+    if (!signalk_source_live_unlocked()) return false;
+    uint8_t state = g_nav_state;
+    float lat = g_nav_latitude;
+    float lon = g_nav_longitude;
+    return state == SLOT_GOOD && isfinite(lat) && isfinite(lon);
+}
+
+static void store_slot_locked(int index, float value, bool good) {
+    if (good) {
+        g_sensor_values[index] = value;
+        g_slot_state[index] = SLOT_GOOD;
+        g_slot_ms[index] = millis();
+    } else {
+        g_slot_state[index] = SLOT_BAD;
+    }
+}
+
+static void store_path_number(const char *path, float value, bool good) {
+    if (path == NULL || path[0] == '\0') return;
+    bool found = false;
+    if (sensor_mutex != NULL && xSemaphoreTake(sensor_mutex, pdMS_TO_TICKS(50))) {
+        for (int i = 0; i < TOTAL_PARAMS; i++) {
+            if (signalk_paths[i].length() > 0 && signalk_paths[i].equals(path)) {
+                store_slot_locked(i, value, good);
+                found = true;
+            }
+        }
+        if (!found) {
+            PathSample stored;
+            stored.value = good ? value : NAN;
+            stored.state = good ? SLOT_GOOD : SLOT_BAD;
+            stored.ms = millis();
+            extended_sensor_values[String(path)] = stored;
+        }
+        xSemaphoreGive(sensor_mutex);
+    }
+}
+
+static bool read_finite_number(JsonVariant value, float *out) {
+    if (value.isNull() || value.is<bool>() || value.is<JsonObject>() || value.is<JsonArray>() || value.is<const char*>()) {
+        return false;
+    }
+    if (!value.is<float>()) return false;
+    float number = value.as<float>();
+    if (!isfinite(number)) return false;
+    *out = number;
+    return true;
 }
 
 // Fetch metadata from SignalK REST API for a specific path
@@ -435,6 +522,7 @@ void init_sensor_mutex() {
 static void wsEvent(WStype_t type, uint8_t * payload, size_t length) {
     if (type == WStype_CONNECTED) {
         Serial.println("Signal K: WebSocket connected");
+        g_link_up = true;
         last_message_time = millis();
         // reset backoff on successful connect
         current_backoff_ms = RECONNECT_BASE_MS;
@@ -492,10 +580,20 @@ static void wsEvent(WStype_t type, uint8_t * payload, size_t length) {
                     // navigation.position arrives as a JSON object {latitude,longitude}.
                     // Rounds leave the object to as<float>(), which stores 0.
                     if (signalk_host().parse_nav_objects && strcmp(path, "navigation.position") == 0) {
+                        float lat = NAN;
+                        float lon = NAN;
+                        bool good = false;
                         if (val["value"].is<JsonObject>()) {
                             JsonObject pos = val["value"].as<JsonObject>();
-                            if (pos.containsKey("latitude"))  g_nav_latitude  = pos["latitude"].as<float>();
-                            if (pos.containsKey("longitude")) g_nav_longitude = pos["longitude"].as<float>();
+                            good = read_finite_number(pos["latitude"], &lat) && read_finite_number(pos["longitude"], &lon);
+                        }
+                        if (good) {
+                            g_nav_latitude = lat;
+                            g_nav_longitude = lon;
+                            g_nav_state = SLOT_GOOD;
+                            g_nav_ms = millis();
+                        } else {
+                            g_nav_state = SLOT_BAD;
                         }
                         continue;
                     }
@@ -506,23 +604,9 @@ static void wsEvent(WStype_t type, uint8_t * payload, size_t length) {
                         continue;
                     }
 
-                    float value = val["value"].as<float>();
-
-                    // Check if this path matches any gauge path
-                    bool found_in_gauge = false;
-                    for (int i = 0; i < TOTAL_PARAMS; i++) {
-                        if (signalk_paths[i].length() > 0 && signalk_paths[i].equals(path)) {
-                            set_sensor_value(i, value);
-                            found_in_gauge = true;
-                            // Don't break - continue to update ALL matching path indices
-                        }
-                    }
-                    
-                    // If not in gauge paths, store in extended map (for number/dual displays)
-                    if (!found_in_gauge && sensor_mutex != NULL && xSemaphoreTake(sensor_mutex, pdMS_TO_TICKS(50))) {
-                        extended_sensor_values[String(path)] = value;
-                        xSemaphoreGive(sensor_mutex);
-                    }
+                    float value = NAN;
+                    bool good = read_finite_number(val["value"], &value);
+                    store_path_number(path, value, good);
                 }
                 // Units carried on the update. Updates with no values are skipped
                 // above, which is the same filter both firmwares already used.
@@ -552,12 +636,19 @@ static void wsEvent(WStype_t type, uint8_t * payload, size_t length) {
     }
 
     if (type == WStype_DISCONNECTED) {
-        Serial.println("[SK] WebSocket disconnected — will reconnect");
+        g_link_up = false;
+        if (payload != NULL && length > 0) {
+            Serial.printf("[SK] WebSocket disconnected (%.*s) — will reconnect\n",
+                          (int)length, (const char *)payload);
+        } else {
+            Serial.println("[SK] WebSocket disconnected — will reconnect");
+        }
         current_backoff_ms = RECONNECT_BASE_MS;
         next_reconnect_at = millis() + RECONNECT_BASE_MS;
     }
 
     if (type == WStype_ERROR) {
+        g_link_up = false;
         Serial.println("[SK] WebSocket error — will reconnect");
         current_backoff_ms = RECONNECT_BASE_MS;
         next_reconnect_at = millis() + RECONNECT_BASE_MS;
@@ -772,12 +863,19 @@ static std::vector<String> get_active_screen_paths(int screen_1based) {
     // Active screen paths
     merge(get_signalk_paths_for_screen(active_idx));
 
-    // Background graph screens still need data collection
+    // Background graph screens still need data collection.
+    // Armed thresholds and an anchor watch also need their paths while another
+    // screen is in front, or the alarm reads a slot the socket is not sending.
     for (int s = 0; s < NUM_SCREENS; s++) {
-        if (s == active_idx) continue;
-        if (screen_configs[s].display_type == DISPLAY_TYPE_GRAPH) {
-            merge(get_signalk_paths_for_screen(s));
+        bool want = false;
+        if (s != active_idx && screen_configs[s].display_type == DISPLAY_TYPE_GRAPH) want = true;
+        if (screen_configs[s].display_type == DISPLAY_TYPE_ANCHOR) want = true;
+        for (int g = 0; g < 2 && !want; g++) {
+            for (int z = 0; z < 5; z++) {
+                if (screen_configs[s].buzzer[g][z] != 0) want = true;
+            }
         }
+        if (want) merge(get_signalk_paths_for_screen(s));
     }
     return result;
 }
@@ -852,5 +950,6 @@ void refresh_signalk_subscriptions() {
     enqueue_outgoing(out);
 }
 
+#include "alarm_monitor.cpp"
 
 

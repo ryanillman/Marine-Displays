@@ -798,8 +798,12 @@ static void lcd7_color_bars()
 
 void LCD_Init()
 {
+  // IDF 5 RGB driver. The bounce buffer is what the panel DMA reads; the
+  // full frame stays in PSRAM. Width*10 matches the Waveshare demo.
+  // The 7" image links a patched RGB driver. One lost EOF used to leave
+  // the picture shifted by one bounce buffer (10 lines) until reboot.
   esp_lcd_rgb_panel_config_t rgb_config = {
-    .clk_src = LCD_CLK_SRC_PLL160M,
+    .clk_src = LCD_CLK_SRC_DEFAULT,
     .timings = {
       .pclk_hz = ESP_PANEL_LCD_RGB_TIMING_FREQ_HZ,
       .h_res = ESP_PANEL_LCD_WIDTH,
@@ -819,20 +823,21 @@ void LCD_Init()
       },
     },
     .data_width = ESP_PANEL_LCD_RGB_DATA_WIDTH,
-    .sram_trans_align = 4,
-    .psram_trans_align = 64,
+    .bits_per_pixel = ESP_PANEL_LCD_RGB_PIXEL_BITS,
+    .num_fbs = 1,
+    .bounce_buffer_size_px = ESP_PANEL_LCD_RGB_BOUNCE_BUF_SIZE,
+    .dma_burst_size = 64,
     .hsync_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_HSYNC,
     .vsync_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_VSYNC,
     .de_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_DE,
     .pclk_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_PCLK,
-    .data_gpio_nums = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
     .disp_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_DISP,
-    .on_frame_trans_done = NULL,
-    .user_ctx = NULL,
+    .data_gpio_nums = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
     .flags = {
       .disp_active_low = 0,
-      .relax_on_idle = 0,
+      .refresh_on_demand = 0,
       .fb_in_psram = 1,
+      .bb_invalidate_cache = 1,
     },
   };
 
@@ -861,7 +866,8 @@ void LCD_Init()
   esp_lcd_panel_reset(panel_handle);
   esp_lcd_panel_init(panel_handle);
   esp_lcd_panel_disp_on_off(panel_handle, true);
-  ets_printf("[LCD7] panel up PSRAM free=%u\r\n",
+  ets_printf("[LCD7] panel up bounce=%u px PSRAM free=%u\r\n",
+             (unsigned)ESP_PANEL_LCD_RGB_BOUNCE_BUF_SIZE,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
   lcd7_color_bars();
 }

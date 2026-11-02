@@ -432,20 +432,14 @@ void loop() {
             last_needle_update = now;
         }
         
-        // Update icon styles and optionally trigger buzzer alerts per configured zone
+        // Recolor gauge icons from a live sample. Beeps are alarm_monitor_poll.
         {
-            static int last_zone_state[2] = {-1, -1}; // last selected zone per gauge (top=0,bottom=1)
-            unsigned long ALERT_COOLDOWN_MS = 60000;
-            // Use user-configured buzzer cooldown (seconds) from settings. 0 => constant (no cooldown)
-            extern uint16_t buzzer_cooldown_sec;
-            if (buzzer_cooldown_sec == 0) ALERT_COOLDOWN_MS = 0;
-            else ALERT_COOLDOWN_MS = (unsigned long)buzzer_cooldown_sec * 1000UL;
+            static int last_zone_state[2] = {-1, -1};
 
             int current_screen = ui_get_current_screen();
             int screen_idx = current_screen - 1;
             if (screen_idx < 0) screen_idx = 0;
 
-            // Map icons for convenience
             lv_obj_t* icons[2] = { NULL, NULL };
             switch (current_screen) {
                 case 1: icons[0] = ui_TopIcon1; icons[1] = ui_BottomIcon1; break;
@@ -456,7 +450,6 @@ void loop() {
                 default: break;
             }
 
-            // Determine runtime values for top/bottom gauges for this screen
             float runtime_val[2] = { NAN, NAN };
             switch (current_screen) {
                 case 1:
@@ -483,113 +476,35 @@ void loop() {
                     break;
             }
 
-            // For each gauge, choose zone and optionally trigger buzzer if configured
             for (int g = 0; g < 2; ++g) {
-                lv_obj_t* icon = icons[g];
-                if (icon == NULL) continue;
+                    lv_obj_t* icon = icons[g];
+                    if (icon == NULL) continue;
+                    float val = runtime_val[g];
+                    if (isnan(val)) continue;
 
-                float val = runtime_val[g];
-                int chosen_zone = -1;
-                // Prefer the most specific matching zone (smallest range) so
-                // narrow alert zones win when ranges overlap.
-                float best_range = 1e30f;
-                for (int z = 1; z <= 4; ++z) {
-                    float mn = screen_configs[screen_idx].min[g][z];
-                    float mx = screen_configs[screen_idx].max[g][z];
-                    if (mn == mx) continue;
-                    if (!isnan(val) && val >= mn && val <= mx) {
-                        float range = mx - mn;
-                        if (range < best_range) { best_range = range; chosen_zone = z; }
-                    }
-                }
-                // If no numeric match but there is a configured zone and value is NaN,
-                // pick the first configured zone (fallback behavior).
-                if (chosen_zone == -1 && isnan(val)) {
+                    int chosen_zone = -1;
+                    float best_range = 1e30f;
                     for (int z = 1; z <= 4; ++z) {
                         float mn = screen_configs[screen_idx].min[g][z];
                         float mx = screen_configs[screen_idx].max[g][z];
-                        if (mn != mx) { chosen_zone = z; break; }
-                    }
-                }
-                if (chosen_zone == -1) chosen_zone = 1;
-                int current_state = chosen_zone - 1;
-
-                // Make icon visible and apply style for the chosen zone when it changes
-                if (current_state != last_zone_state[g]) {
-                    lv_obj_clear_flag(icon, LV_OBJ_FLAG_HIDDEN);
-                    _ui_apply_icon_style(icon, screen_idx, g);
-                    last_zone_state[g] = current_state;
-                }
-
-                // Check buzzer for Per-screen mode every cycle (not only on zone-change)
-                bool buz_enabled = (screen_configs[screen_idx].buzzer[g][chosen_zone] != 0);
-                unsigned long now = millis();
-                bool cooldown_expired = (now - last_buzzer_time > ALERT_COOLDOWN_MS);
-                if (buzzer_mode == 2 && buz_enabled && (first_run_buzzer || cooldown_expired)) {
-                    // Debug: log buzzer decision
-                    printf("[ALERT] screen=%d gauge=%d chosen_zone=%d val=%.2f buz_enabled=%d first_run=%d cooldown_expired=%d\n",
-                           screen_idx, g, chosen_zone, val, (int)buz_enabled, (int)first_run_buzzer, (int)cooldown_expired);
-                    trigger_buzzer_alert();
-                    last_buzzer_time = now;
-                    first_run_buzzer = false;
-                }
-            }
-
-            // If Global buzzer mode is enabled, scan all screens for any configured buzzer zones
-            if (buzzer_mode == 1) {
-                unsigned long now = millis();
-                bool cooldown_expired = (now - last_buzzer_time > ALERT_COOLDOWN_MS);
-                if (first_run_buzzer || cooldown_expired) {
-                    bool fired = false;
-                    for (int s = 0; s < NUM_SCREENS && !fired; ++s) {
-                        // For each gauge on screen s
-                        for (int g = 0; g < 2 && !fired; ++g) {
-                            // Get runtime value for that screen/gauge
-                            float rval = NAN;
-                            switch (s+1) {
-                                case 1: rval = (g==0) ? get_sensor_value(SCREEN1_RPM) : get_sensor_value(SCREEN1_COOLANT_TEMP); break;
-                                case 2: rval = (g==0) ? get_sensor_value(SCREEN2_RPM) : get_sensor_value(SCREEN2_FUEL); break;
-                                case 3: rval = (g==0) ? get_sensor_value(SCREEN3_COOLANT_TEMP) : get_sensor_value(SCREEN3_EXHAUST_TEMP); break;
-                                case 4: rval = (g==0) ? get_sensor_value(SCREEN4_FUEL) : get_sensor_value(SCREEN4_COOLANT_TEMP); break;
-                                case 5: rval = (g==0) ? get_sensor_value(SCREEN5_OIL_PRESSURE) : get_sensor_value(SCREEN5_COOLANT_TEMP); break;
-                                default: rval = NAN; break;
-                            }
-                            int chosen_zone = -1;
-                            float best_range = 1e30f;
-                            for (int z = 1; z <= 4; ++z) {
-                                float mn = screen_configs[s].min[g][z];
-                                float mx = screen_configs[s].max[g][z];
-                                if (mn == mx) continue;
-                                if (!isnan(rval) && rval >= mn && rval <= mx) {
-                                    float range = mx - mn;
-                                    if (range < best_range) { best_range = range; chosen_zone = z; }
-                                }
-                            }
-                            if (chosen_zone == -1 && isnan(rval)) {
-                                for (int z = 1; z <= 4; ++z) {
-                                    float mn = screen_configs[s].min[g][z];
-                                    float mx = screen_configs[s].max[g][z];
-                                    if (mn != mx) { chosen_zone = z; break; }
-                                }
-                            }
-                            if (chosen_zone == -1) chosen_zone = 1;
-                            bool buz_enabled = (screen_configs[s].buzzer[g][chosen_zone] != 0);
-                            if (buz_enabled) {
-                                printf("[ALERT-GLOBAL] screen=%d gauge=%d chosen_zone=%d val=%.2f buz_enabled=%d\n",
-                                       s, g, chosen_zone, rval, (int)buz_enabled);
-                                trigger_buzzer_alert();
-                                last_buzzer_time = now;
-                                first_run_buzzer = false;
-                                fired = true;
-                                break;
-                            }
+                        if (mn == mx) continue;
+                        if (val >= mn && val <= mx) {
+                            float range = mx - mn;
+                            if (range < best_range) { best_range = range; chosen_zone = z; }
                         }
                     }
-                }
+                    if (chosen_zone == -1) chosen_zone = 1;
+                    int current_state = chosen_zone - 1;
+                    if (current_state != last_zone_state[g]) {
+                        lv_obj_clear_flag(icon, LV_OBJ_FLAG_HIDDEN);
+                        _ui_apply_icon_style(icon, screen_idx, g);
+                        last_zone_state[g] = current_state;
+                    }
             }
+            alarm_monitor_poll(current_screen);
         }
     }
-    
+
     Lvgl_Loop();
 
     buzzer_alert_service();

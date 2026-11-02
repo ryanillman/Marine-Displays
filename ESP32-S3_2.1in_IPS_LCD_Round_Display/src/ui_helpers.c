@@ -278,7 +278,7 @@ void _ui_switch_theme(int val)
 
 // Update icon recolor/opacity based on the current measured value and the
 // configured zones/colors in `screen_configs`.
-// If `value` is NAN, fallback to zone 1 (default).
+// A missing sample leaves the icon unrecolored.
 void _ui_apply_icon_style(lv_obj_t *img, int screen, int gauge)
 {
    if (!img) return;
@@ -311,15 +311,19 @@ void _ui_apply_icon_style(lv_obj_t *img, int screen, int gauge)
 
    // Obtain runtime value (may be NAN)
    float runtime_value = ui_get_runtime_value(screen, gauge);
+   if (isnan(runtime_value)) {
+      lv_obj_set_style_img_recolor_opa(img, LV_OPA_TRANSP, LV_PART_MAIN);
+      return;
+   }
 
    // Find the zone index (1..4) whose min/max contains runtime_value.
+   // A finite value that matches no zone keeps zone 1.
    int chosen_zone = 1;
    for (int z = 1; z <= 4; ++z) {
       float mn = screen_configs[screen].min[gauge][z];
       float mx = screen_configs[screen].max[gauge][z];
       if (mn == mx) continue; // skip unconfigured zone
-      if (!isnan(runtime_value) && runtime_value >= mn && runtime_value <= mx) { chosen_zone = z; break; }
-      if (isnan(runtime_value) && (mn != 0.0f || mx != 0.0f)) { chosen_zone = z; break; }
+      if (runtime_value >= mn && runtime_value <= mx) { chosen_zone = z; break; }
    }
 
    // Diagnostic: Print transparent value for Min2 (zone 2) at runtime
