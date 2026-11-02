@@ -4,6 +4,7 @@
 // Both round boards compile this one text. It does not branch on which round it is.
 
 #include "widget_registry.h"
+#include "fault_flag.cpp"
 #include "ui.h"
 #include "ui_helpers.h"
 #include "screen_config_c_api.h"
@@ -20,43 +21,51 @@ extern bool test_mode;
 extern int16_t last_top_angle[6];
 extern int16_t last_bottom_angle[6];
 
-static Sample make_sample(float value) {
+static Sample invalid_sample() {
     Sample sample;
-    sample.value = value;
+    sample.value = NAN;
     sample.age_ms = 0;
-    sample.valid = true;
+    sample.valid = false;
     return sample;
+}
+
+static void assign_field(FieldView *field, Sample sample, const char *path) {
+    field_view_clear(field);
+    field->sample = sample;
+    field->source = "Signal K";
+    field->path = path ? path : "";
+}
+
+static lv_obj_t *get_screen_obj(int s) {
+    switch (s) {
+        case 0: return ui_Screen1;
+        case 1: return ui_Screen2;
+        case 2: return ui_Screen3;
+        case 3: return ui_Screen4;
+        case 4: return ui_Screen5;
+        default: return NULL;
+    }
+}
+
+static void present_fault(int screen_idx, const char *key, int x, int y, int w, int h, const FieldView &field) {
+    char id[24];
+    snprintf(id, sizeof(id), "%d-%s", screen_idx, key);
+    if (field.sample.valid) {
+        fault_flag_hide(id);
+        return;
+    }
+    const char *source = (field.source && field.source[0]) ? field.source : "Signal K";
+    fault_flag_show(get_screen_obj(screen_idx), id, x, y, w, h, source, field.path ? field.path : "");
+}
+
+static void set_needle_hidden(lv_obj_t *needle, bool hidden) {
+    if (!needle) return;
+    if (hidden) lv_obj_add_flag(needle, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_clear_flag(needle, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void add_config_path(void *ctx, WidgetPathFn add, const char *path) {
     if (path && path[0] != '\0') add(ctx, path);
-}
-
-static bool gauge_read(int screen_num, float *top, float *bottom) {
-    switch (screen_num) {
-        case 1:
-            *top = get_sensor_sample(SCREEN1_RPM).value;
-            *bottom = get_sensor_sample(SCREEN1_COOLANT_TEMP).value;
-            return true;
-        case 2:
-            *top = get_sensor_sample(SCREEN2_RPM).value;
-            *bottom = get_sensor_sample(SCREEN2_FUEL).value;
-            return true;
-        case 3:
-            *top = get_sensor_sample(SCREEN3_COOLANT_TEMP).value;
-            *bottom = get_sensor_sample(SCREEN3_EXHAUST_TEMP).value;
-            return true;
-        case 4:
-            *top = get_sensor_sample(SCREEN4_FUEL).value;
-            *bottom = get_sensor_sample(SCREEN4_COOLANT_TEMP).value;
-            return true;
-        case 5:
-            *top = get_sensor_sample(SCREEN5_OIL_PRESSURE).value;
-            *bottom = get_sensor_sample(SCREEN5_COOLANT_TEMP).value;
-            return true;
-        default:
-            return false;
-    }
 }
 
 static void gauge_needles(int screen_num, lv_obj_t **top, lv_obj_t **bottom) {
@@ -86,42 +95,42 @@ static void gauge_icons(int screen_num, lv_obj_t **top, lv_obj_t **bottom) {
 }
 
 static void gauge_update(int screen_num, const FieldView *fields, int field_count) {
-    if (field_count < 2) return;
+    if (field_count < 2 || screen_num < 1 || screen_num > 5) return;
+    int screen_idx = screen_num - 1;
+    bool show_bottom = screen_configs[screen_idx].show_bottom != 0;
 
-    static bool initialized[6] = {false, false, false, false, false, false};
     lv_obj_t *top_needle = NULL;
     lv_obj_t *bottom_needle = NULL;
     gauge_needles(screen_num, &top_needle, &bottom_needle);
 
-    float top_value = fields[0].sample.value;
-    float bottom_value = fields[1].sample.value;
-    int16_t top_angle, bottom_angle;
-
-    if (!initialized[screen_num]) {
-        top_angle = 0;
-        bottom_angle = 180;
-        initialized[screen_num] = true;
-    } else {
-        if (!isnan(top_value)) {
-            top_angle = value_to_angle_for_param(top_value, screen_num - 1, 0);
-        } else {
-            top_angle = last_top_angle[screen_num];
-        }
-        if (!isnan(bottom_value)) {
-            bottom_angle = value_to_angle_for_param(bottom_value, screen_num - 1, 1);
-        } else {
-            bottom_angle = last_bottom_angle[screen_num];
-        }
+    if (!fields[0].sample.valid) set_needle_hidden(top_needle, true);
+    present_fault(screen_idx, "top", 20, 8, 440, 210, fields[0]);
+    if (fields[0].sample.valid) {
+        set_needle_hidden(top_needle, false);
+        int16_t top_angle = value_to_angle_for_param(fields[0].sample.value, screen_idx, 0);
+        animate_generic_needle(top_needle, last_top_angle[screen_num], top_angle, false);
     }
 
-    animate_generic_needle(top_needle, last_top_angle[screen_num], top_angle, false);
-    animate_generic_needle(bottom_needle, last_bottom_angle[screen_num], bottom_angle, true);
+    if (!show_bottom) {
+        set_needle_hidden(bottom_needle, true);
+        char id[24];
+        snprintf(id, sizeof(id), "%d-bot", screen_idx);
+        fault_flag_hide(id);
+    } else {
+        if (!fields[1].sample.valid) set_needle_hidden(bottom_needle, true);
+        present_fault(screen_idx, "bot", 20, 262, 440, 210, fields[1]);
+        if (fields[1].sample.valid) {
+            set_needle_hidden(bottom_needle, false);
+            int16_t bottom_angle = value_to_angle_for_param(fields[1].sample.value, screen_idx, 1);
+            animate_generic_needle(bottom_needle, last_bottom_angle[screen_num], bottom_angle, true);
+        }
+    }
 
     lv_obj_t *top_icon = NULL;
     lv_obj_t *bottom_icon = NULL;
     gauge_icons(screen_num, &top_icon, &bottom_icon);
-    if (top_icon) _ui_apply_icon_style(top_icon, screen_num - 1, 0);
-    if (bottom_icon) _ui_apply_icon_style(bottom_icon, screen_num - 1, 1);
+    if (top_icon) _ui_apply_icon_style(top_icon, screen_idx, 0);
+    if (bottom_icon) _ui_apply_icon_style(bottom_icon, screen_idx, 1);
 }
 
 static void gauge_collect(int screen_idx, void *ctx, WidgetPathFn add) {
@@ -134,6 +143,11 @@ static void gauge_collect(int screen_idx, void *ctx, WidgetPathFn add) {
 // Needles are SquareLine objects. Switching back to a gauge removes the center number.
 static void gauge_create(int screen_idx) {
     gauge_number_display_destroy(screen_idx);
+    lv_obj_t *top = NULL;
+    lv_obj_t *bottom = NULL;
+    gauge_needles(screen_idx + 1, &top, &bottom);
+    set_needle_hidden(top, true);
+    set_needle_hidden(bottom, true);
 }
 
 static void gauge_destroy(int screen_idx) {
@@ -145,8 +159,8 @@ static void gauge_number_update(int screen_num, const FieldView *fields, int fie
     if (s < 0 || s >= NUM_SCREENS) return;
     if (screen_configs[s].display_type != DISPLAY_TYPE_GAUGE_NUMBER) return;
     if (field_count < 1) return;
-    // An empty path or a NaN reading leaves the center text alone.
-    if (isnan(fields[0].sample.value)) return;
+    present_fault(s, "ctr", 120, 180, 240, 140, fields[0]);
+    if (!fields[0].sample.valid) return;
     gauge_number_display_update_center(s, fields[0].sample.value, fields[0].unit, fields[0].description);
 }
 
@@ -184,6 +198,7 @@ const WidgetOps *widget_ops_for(int display_type) {
 }
 
 void widget_apply_type(int screen_idx) {
+    fault_flag_clear_screen(screen_idx);
     const WidgetOps *ops = widget_ops_for(screen_configs[screen_idx].display_type);
     if (ops && ops->create) ops->create(screen_idx);
 }
@@ -226,38 +241,34 @@ static void gauge_number_run(int screen_num) {
     if (s < 0 || s >= NUM_SCREENS) return;
     if (screen_configs[s].display_type != DISPLAY_TYPE_GAUGE_NUMBER) return;
 
-    String path = String(screen_configs[s].gauge_num_center_path);
+    const char *path = screen_configs[s].gauge_num_center_path;
+    Sample sample = invalid_sample();
     String unit;
     String description;
-    float display_value = NAN;
-    if (path.length() > 0) {
-        float raw = get_sensor_sample_by_path(path).value;
-        if (!isnan(raw)) {
-            unit = get_sensor_unit_by_path(path);
-            description = get_sensor_description_by_path(path);
-            display_value = convert_unit(raw, unit, path, unit);
-        }
+    if (path[0] != '\0') {
+        String key = String(path);
+        sample = get_sensor_sample_by_path(key);
+        unit = get_sensor_unit_by_path(key);
+        description = get_sensor_description_by_path(key);
+        if (sample.valid) sample.value = convert_unit(sample.value, unit, key, unit);
     }
-
     FieldView field;
-    field.sample = make_sample(display_value);
+    assign_field(&field, sample, path);
     field.unit = unit.c_str();
     field.description = description.c_str();
     kGaugeNumberOps.update(screen_num, &field, 1);
 }
 
 static void gauge_run(int screen_num) {
-    float top = 0.0f;
-    float bottom = 0.0f;
-    if (!gauge_read(screen_num, &top, &bottom)) return;
-
+    if (screen_num < 1 || screen_num > 5) return;
+    int screen_idx = screen_num - 1;
+    Sample top = get_sensor_sample(screen_idx * 2);
+    Sample bottom = get_sensor_sample(screen_idx * 2 + 1);
+    String top_path = get_signalk_path_by_index(screen_idx * 2);
+    String bottom_path = get_signalk_path_by_index(screen_idx * 2 + 1);
     FieldView fields[2];
-    fields[0].sample = make_sample(top);
-    fields[0].unit = "";
-    fields[0].description = "";
-    fields[1].sample = make_sample(bottom);
-    fields[1].unit = "";
-    fields[1].description = "";
+    assign_field(&fields[0], top, top_path.c_str());
+    assign_field(&fields[1], bottom, bottom_path.c_str());
     kGaugeOps.update(screen_num, fields, 2);
 }
 

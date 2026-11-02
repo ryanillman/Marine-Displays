@@ -1,11 +1,11 @@
 // Screen widgets for the square firmware.
-// update receives samples filled once. Every sample is valid, and the value is
-// the number this widget already draws, so the glass does not change.
+// A field draws only while its sample is valid. Otherwise that field shows
+// the fault flag and a needle stays hidden.
 
 #include "widget_registry.h"
 #include "ui.h"
+#include "../../common/widget-registry/fault_flag.cpp"
 #include "ui_helpers.h"
-#include "ui_Settings.h"
 #include "screen_config_c_api.h"
 #include "signalk_config.h"
 #include "network_setup.h"
@@ -27,13 +27,9 @@
 
 static const char *TAG_UIHOT = "ui_hotupdate";
 
-#define ALARM_LOG_INTERVAL_MS 5000
-
 extern bool test_mode;
 extern int16_t last_top_angle[6];
 extern int16_t last_bottom_angle[6];
-extern unsigned long last_buzzer_time;
-extern unsigned long last_alarm_log_time;
 
 extern "C" void mark_compass_display_created(int screen_num);
 extern "C" void mark_compass_display_destroyed(int screen_num);
@@ -45,49 +41,69 @@ static float last_display_values[5] = {NAN, NAN, NAN, NAN, NAN};
 static String last_display_units[5] = {"", "", "", "", ""};
 static String last_display_descriptions[5] = {"", "", "", "", ""};
 
-static Sample make_sample(float value) {
-    Sample sample;
-    sample.value = value;
-    sample.age_ms = 0;
-    sample.valid = true;
-    return sample;
-}
-
 struct HeldField {
     FieldView view;
     String unit;
     String description;
-    void bind(float value) {
-        view.sample = make_sample(value);
+    String path;
+    void bind(const Sample &sample) {
+        view.sample = sample;
         view.unit = unit.c_str();
         view.description = description.c_str();
+        view.source = "Signal K";
+        view.path = path.c_str();
     }
 };
 
-// Same path read the dual, quad, gauge-number, and graph updates used.
-// Empty path: value 0, unit "No Path". NaN: unit "N/A", value left NaN, no convert.
+static Sample invalid_sample() {
+    Sample sample;
+    sample.value = NAN;
+    sample.age_ms = 0;
+    sample.valid = false;
+    return sample;
+}
+
+static void assign_field(FieldView *field, Sample sample, const char *path) {
+    field_view_clear(field);
+    field->sample = sample;
+    field->source = "Signal K";
+    field->path = path ? path : "";
+}
+
+// Empty path and a failed sample stay invalid. A live finite sample is converted
+// into the unit on the glass.
 static void read_path(const String &path, HeldField *out) {
+    out->path = path;
+    out->description = "";
     if (path.length() == 0) {
         out->unit = "No Path";
-        out->description = "";
-        out->bind(0.0f);
+        out->bind(invalid_sample());
         return;
     }
-    float value = get_sensor_sample_by_path(path).value;
+    Sample sample = get_sensor_sample_by_path(path);
     out->unit = get_sensor_unit_by_path(path);
     out->description = get_sensor_description_by_path(path);
-    if (isnan(value)) {
-        out->unit = "N/A";
-        out->description = "";
-        out->bind(value);
-        return;
+    if (sample.valid) {
+        sample.value = convert_unit(sample.value, out->unit, path, out->unit);
     }
-    value = convert_unit(value, out->unit, path, out->unit);
-    out->bind(value);
+    out->bind(sample);
 }
 
 static void add_path(void *ctx, WidgetPathFn add, const char *path) {
     if (path && path[0] != '\0') add(ctx, path);
+}
+
+static lv_obj_t *get_screen_obj(int s);
+
+static void present_fault(int screen_idx, const char *key, int x, int y, int w, int h, const FieldView &field) {
+    char id[24];
+    snprintf(id, sizeof(id), "%d-%s", screen_idx, key);
+    if (field.sample.valid) {
+        fault_flag_hide(id);
+        return;
+    }
+    const char *source = (field.source && field.source[0]) ? field.source : "Signal K";
+    fault_flag_show(get_screen_obj(screen_idx), id, x, y, w, h, source, field.path ? field.path : "");
 }
 
 static lv_obj_t *get_screen_obj(int s) {
@@ -167,77 +183,9 @@ extern "C" void reset_number_display_tracking(int screen_num) {
     last_display_descriptions[screen_idx] = "";
 }
 
-static void draw_number(int screen_idx, float display_value, const char *unit, const char *description) {
-    if (!isnan(display_value)) {
-        number_display_update(screen_idx, display_value, unit, description);
-    } else {
-        number_display_update(screen_idx, 0.0f, unit, description);
-    }
-}
-
-extern "C" void force_update_number_display(int screen_num) {
-    if (screen_num < 1 || screen_num > 5) return;
-    int screen_idx = screen_num - 1;
-
-    String number_path = String(screen_configs[screen_idx].number_path);
-    if (number_path.length() == 0) {
-        number_display_update(screen_idx, 0.0f, "No Path", "");
-        return;
-    }
-
-    float display_value = get_sensor_sample_by_path(number_path).value;
-    String unit_str = get_sensor_unit_by_path(number_path);
-    String description = get_sensor_description_by_path(number_path);
-    display_value = convert_unit(display_value, unit_str, number_path, unit_str);
-    Sample sample = make_sample(display_value);
-    draw_number(screen_idx, sample.value, unit_str.c_str(), description.c_str());
-
-    last_display_values[screen_idx] = display_value;
-    last_display_units[screen_idx] = unit_str;
-    last_display_descriptions[screen_idx] = description;
-}
-
-static void fill_number(int screen_idx, const String &number_path, HeldField *out) {
-    int sensor_idx = -1;
-    for (int i = 0; i < NUM_SCREENS * 2; i++) {
-        if (get_signalk_path_by_index(i) == number_path) {
-            sensor_idx = i;
-            break;
-        }
-    }
-    float display_value = 0.0f;
-    if (sensor_idx >= 0) {
-        display_value = get_sensor_sample(sensor_idx).value;
-        out->unit = get_sensor_unit(sensor_idx);
-        out->description = get_sensor_description(sensor_idx);
-        display_value = convert_unit(display_value, out->unit, number_path, out->unit);
-    } else {
-        display_value = get_sensor_sample_by_path(number_path).value;
-        out->unit = get_sensor_unit_by_path(number_path);
-        out->description = get_sensor_description_by_path(number_path);
-        display_value = convert_unit(display_value, out->unit, number_path, out->unit);
-    }
-    out->bind(display_value);
-}
-
 static void number_update(int screen_num, const FieldView *fields, int field_count) {
-    if (screen_num < 1 || screen_num > 5) return;
+    if (screen_num < 1 || screen_num > 5 || field_count < 1) return;
     int screen_idx = screen_num - 1;
-    String number_path = String(screen_configs[screen_idx].number_path);
-    if (number_path.length() == 0) {
-        if (!number_displays_created[screen_idx]) {
-            number_display_create(screen_idx);
-            number_displays_created[screen_idx] = true;
-        }
-        number_display_update(screen_idx, 0.0f, "No Path", "");
-        return;
-    }
-    if (field_count < 1) return;
-
-    float display_value = fields[0].sample.value;
-    const char *unit_str = fields[0].unit ? fields[0].unit : "";
-    const char *description = fields[0].description ? fields[0].description : "";
-
     if (!number_displays_created[screen_idx]) {
         number_display_create(screen_idx);
         number_displays_created[screen_idx] = true;
@@ -246,42 +194,21 @@ static void number_update(int screen_num, const FieldView *fields, int field_cou
         last_display_descriptions[screen_idx] = "";
     }
 
+    present_fault(screen_idx, "num", 40, 80, 400, 320, fields[0]);
+    if (!fields[0].sample.valid) return;
+
+    float display_value = fields[0].sample.value;
+    const char *unit_str = fields[0].unit ? fields[0].unit : "";
+    const char *description = fields[0].description ? fields[0].description : "";
     bool value_changed = (isnan(display_value) != isnan(last_display_values[screen_idx])) ||
                          (!isnan(display_value) && fabs(display_value - last_display_values[screen_idx]) > 0.001f);
     bool unit_changed = (last_display_units[screen_idx] != String(unit_str));
     bool desc_changed = (last_display_descriptions[screen_idx] != String(description));
-
     if (value_changed || unit_changed || desc_changed) {
-        draw_number(screen_idx, display_value, unit_str, description);
+        number_display_update(screen_idx, display_value, unit_str, description);
         last_display_values[screen_idx] = display_value;
         last_display_units[screen_idx] = unit_str;
         last_display_descriptions[screen_idx] = description;
-        last_display_values[screen_idx] = display_value;
-        last_display_units[screen_idx] = unit_str;
-    }
-
-    if (!isnan(display_value) && buzzer_mode != 0) {
-        unsigned long ALERT_COOLDOWN_MS = (buzzer_cooldown_sec == 0) ? 0UL : (unsigned long)buzzer_cooldown_sec * 1000UL;
-        unsigned long now_buz = millis();
-        bool cooldown_ok = (now_buz - last_buzzer_time > ALERT_COOLDOWN_MS);
-        bool low_armed  = (screen_configs[screen_idx].buzzer[0][1] != 0);
-        bool high_armed = (screen_configs[screen_idx].buzzer[0][2] != 0);
-        float low_thresh  = screen_configs[screen_idx].min[0][1];
-        float high_thresh = screen_configs[screen_idx].max[0][2];
-        bool low_fired  = low_armed  && (display_value < low_thresh);
-        bool high_fired = high_armed && (display_value > high_thresh);
-        if ((low_fired || high_fired) && (first_run_buzzer || cooldown_ok)) {
-            if (now_buz - last_alarm_log_time > ALARM_LOG_INTERVAL_MS) {
-                Serial.printf("[ALARM] screen=%d number=%.2f low=%s(%.2f) high=%s(%.2f)\n",
-                    screen_idx, display_value,
-                    low_fired  ? "TRIP" : "ok", low_thresh,
-                    high_fired ? "TRIP" : "ok", high_thresh);
-                last_alarm_log_time = now_buz;
-            }
-            trigger_buzzer_alert();
-            last_buzzer_time = now_buz;
-            first_run_buzzer = false;
-        }
     }
 }
 
@@ -295,11 +222,13 @@ static void number_destroy(int s) { number_display_destroy(s); }
 static void number_run(int screen_num) {
     if (screen_num < 1 || screen_num > 5) return;
     int screen_idx = screen_num - 1;
-    String number_path = String(screen_configs[screen_idx].number_path);
     HeldField held;
-    if (number_path.length() > 0) fill_number(screen_idx, number_path, &held);
-    else held.bind(0.0f);
+    read_path(String(screen_configs[screen_idx].number_path), &held);
     number_update(screen_num, &held.view, 1);
+}
+
+extern "C" void force_update_number_display(int screen_num) {
+    number_run(screen_num);
 }
 
 // --- dual --------------------------------------------------------------------
@@ -307,41 +236,13 @@ static void number_run(int screen_num) {
 static void dual_update(int screen_num, const FieldView *fields, int field_count) {
     if (screen_num < 1 || screen_num > 5 || field_count < 2) return;
     int screen_idx = screen_num - 1;
-    float top_value = fields[0].sample.value;
-    float bottom_value = fields[1].sample.value;
-
-    dual_number_display_update_top(screen_idx,
-        isnan(top_value) ? 0.0f : top_value,
-        fields[0].unit, fields[0].description);
-    dual_number_display_update_bottom(screen_idx,
-        isnan(bottom_value) ? 0.0f : bottom_value,
-        fields[1].unit, fields[1].description);
-
-    if (buzzer_mode != 0) {
-        unsigned long ALERT_COOLDOWN_MS = (buzzer_cooldown_sec == 0) ? 0UL : (unsigned long)buzzer_cooldown_sec * 1000UL;
-        unsigned long now_buz = millis();
-        bool cooldown_ok = (now_buz - last_buzzer_time > ALERT_COOLDOWN_MS);
-        float dual_vals[2] = { top_value, bottom_value };
-        for (int ch = 0; ch < 2; ch++) {
-            if (isnan(dual_vals[ch])) continue;
-            bool la = (screen_configs[screen_idx].buzzer[ch][1] != 0);
-            bool ha = (screen_configs[screen_idx].buzzer[ch][2] != 0);
-            bool lf = la && (dual_vals[ch] < screen_configs[screen_idx].min[ch][1]);
-            bool hf = ha && (dual_vals[ch] > screen_configs[screen_idx].max[ch][2]);
-            if ((lf || hf) && (first_run_buzzer || cooldown_ok)) {
-                if (now_buz - last_alarm_log_time > ALARM_LOG_INTERVAL_MS) {
-                    Serial.printf("[ALARM DUAL] screen=%d ch=%d val=%.2f low=%s(%.2f) high=%s(%.2f)\n",
-                        screen_idx, ch, dual_vals[ch],
-                        lf ? "TRIP" : "ok", screen_configs[screen_idx].min[ch][1],
-                        hf ? "TRIP" : "ok", screen_configs[screen_idx].max[ch][2]);
-                    last_alarm_log_time = now_buz;
-                }
-                trigger_buzzer_alert();
-                last_buzzer_time = now_buz;
-                first_run_buzzer = false;
-                break;
-            }
-        }
+    present_fault(screen_idx, "d0", 0, 0, 480, 240, fields[0]);
+    present_fault(screen_idx, "d1", 0, 240, 480, 240, fields[1]);
+    if (fields[0].sample.valid) {
+        dual_number_display_update_top(screen_idx, fields[0].sample.value, fields[0].unit, fields[0].description);
+    }
+    if (fields[1].sample.valid) {
+        dual_number_display_update_bottom(screen_idx, fields[1].sample.value, fields[1].unit, fields[1].description);
     }
 }
 
@@ -369,43 +270,14 @@ static void dual_run(int screen_num) {
 static void quad_update(int screen_num, const FieldView *fields, int field_count) {
     if (screen_num < 1 || screen_num > 5 || field_count < 4) return;
     int screen_idx = screen_num - 1;
-    float tl_value = fields[0].sample.value;
-    float tr_value = fields[1].sample.value;
-    float bl_value = fields[2].sample.value;
-    float br_value = fields[3].sample.value;
-
-    quad_number_display_update_tl(screen_idx, isnan(tl_value) ? 0.0f : tl_value, fields[0].unit, fields[0].description);
-    quad_number_display_update_tr(screen_idx, isnan(tr_value) ? 0.0f : tr_value, fields[1].unit, fields[1].description);
-    quad_number_display_update_bl(screen_idx, isnan(bl_value) ? 0.0f : bl_value, fields[2].unit, fields[2].description);
-    quad_number_display_update_br(screen_idx, isnan(br_value) ? 0.0f : br_value, fields[3].unit, fields[3].description);
-
-    if (buzzer_mode != 0) {
-        unsigned long ALERT_COOLDOWN_MS = (buzzer_cooldown_sec == 0) ? 0UL : (unsigned long)buzzer_cooldown_sec * 1000UL;
-        unsigned long now_buz = millis();
-        bool cooldown_ok = (now_buz - last_buzzer_time > ALERT_COOLDOWN_MS);
-        bool quad_fired = false;
-        auto check_quad = [&](float val, int g, int zl, int zh) {
-            if (quad_fired || isnan(val)) return;
-            bool la = (screen_configs[screen_idx].buzzer[g][zl] != 0);
-            bool ha = (screen_configs[screen_idx].buzzer[g][zh] != 0);
-            bool lf = la && (val < screen_configs[screen_idx].min[g][zl]);
-            bool hf = ha && (val > screen_configs[screen_idx].max[g][zh]);
-            if ((lf || hf) && (first_run_buzzer || cooldown_ok)) quad_fired = true;
-        };
-        check_quad(tl_value, 0, 1, 2);
-        check_quad(tr_value, 0, 3, 4);
-        check_quad(bl_value, 1, 1, 2);
-        check_quad(br_value, 1, 3, 4);
-        if (quad_fired) {
-            if (now_buz - last_alarm_log_time > ALARM_LOG_INTERVAL_MS) {
-                Serial.printf("[ALARM QUAD] screen=%d fired\n", screen_idx);
-                last_alarm_log_time = now_buz;
-            }
-            trigger_buzzer_alert();
-            last_buzzer_time = now_buz;
-            first_run_buzzer = false;
-        }
-    }
+    present_fault(screen_idx, "q0", 0, 0, 240, 240, fields[0]);
+    present_fault(screen_idx, "q1", 240, 0, 240, 240, fields[1]);
+    present_fault(screen_idx, "q2", 0, 240, 240, 240, fields[2]);
+    present_fault(screen_idx, "q3", 240, 240, 240, 240, fields[3]);
+    if (fields[0].sample.valid) quad_number_display_update_tl(screen_idx, fields[0].sample.value, fields[0].unit, fields[0].description);
+    if (fields[1].sample.valid) quad_number_display_update_tr(screen_idx, fields[1].sample.value, fields[1].unit, fields[1].description);
+    if (fields[2].sample.valid) quad_number_display_update_bl(screen_idx, fields[2].sample.value, fields[2].unit, fields[2].description);
+    if (fields[3].sample.valid) quad_number_display_update_br(screen_idx, fields[3].sample.value, fields[3].unit, fields[3].description);
 }
 
 static void quad_collect(int screen_idx, void *ctx, WidgetPathFn add) {
@@ -435,32 +307,9 @@ static void quad_run(int screen_num) {
 static void gauge_number_update(int screen_num, const FieldView *fields, int field_count) {
     if (screen_num < 1 || screen_num > 5 || field_count < 1) return;
     int screen_idx = screen_num - 1;
-    float center_value = fields[0].sample.value;
-    gauge_number_display_update_center(screen_idx,
-        isnan(center_value) ? 0.0f : center_value,
-        fields[0].unit, fields[0].description);
-
-    if (!isnan(center_value) && buzzer_mode != 0) {
-        unsigned long ALERT_COOLDOWN_MS = (buzzer_cooldown_sec == 0) ? 0UL : (unsigned long)buzzer_cooldown_sec * 1000UL;
-        unsigned long now_buz = millis();
-        bool cooldown_ok = (now_buz - last_buzzer_time > ALERT_COOLDOWN_MS);
-        bool la = (screen_configs[screen_idx].buzzer[1][1] != 0);
-        bool ha = (screen_configs[screen_idx].buzzer[1][2] != 0);
-        bool lf = la && (center_value < screen_configs[screen_idx].min[1][1]);
-        bool hf = ha && (center_value > screen_configs[screen_idx].max[1][2]);
-        if ((lf || hf) && (first_run_buzzer || cooldown_ok)) {
-            if (now_buz - last_alarm_log_time > ALARM_LOG_INTERVAL_MS) {
-                Serial.printf("[ALARM GNUM] screen=%d center=%.2f low=%s(%.2f) high=%s(%.2f)\n",
-                    screen_idx, center_value,
-                    lf ? "TRIP" : "ok", screen_configs[screen_idx].min[1][1],
-                    hf ? "TRIP" : "ok", screen_configs[screen_idx].max[1][2]);
-                last_alarm_log_time = now_buz;
-            }
-            trigger_buzzer_alert();
-            last_buzzer_time = now_buz;
-            first_run_buzzer = false;
-        }
-    }
+    present_fault(screen_idx, "ctr", 120, 180, 240, 140, fields[0]);
+    if (!fields[0].sample.valid) return;
+    gauge_number_display_update_center(screen_idx, fields[0].sample.value, fields[0].unit, fields[0].description);
 }
 
 static void gauge_number_collect(int screen_idx, void *ctx, WidgetPathFn add) {
@@ -483,14 +332,18 @@ static void gauge_number_run(int screen_num) {
 static void graph_update(int screen_num, const FieldView *fields, int field_count) {
     if (screen_num < 1 || screen_num > 5 || field_count < 2) return;
     int screen_idx = screen_num - 1;
-    float graph_value = fields[0].sample.value;
-    graph_display_update(screen_idx,
-        isnan(graph_value) ? 0.0f : graph_value,
-        fields[0].unit,
-        fields[0].description,
-        fields[1].sample.value,
-        fields[1].unit,
-        fields[1].description);
+    present_fault(screen_idx, "g1", 30, 70, 420, 300, fields[0]);
+    if (fields[1].path && fields[1].path[0] != '\0') {
+        present_fault(screen_idx, "g2", 250, 360, 210, 100, fields[1]);
+    } else {
+        char id[24];
+        snprintf(id, sizeof(id), "%d-g2", screen_idx);
+        fault_flag_hide(id);
+    }
+    float second = fields[1].sample.valid ? fields[1].sample.value : NAN;
+    float first = fields[0].sample.valid ? fields[0].sample.value : NAN;
+    graph_display_update(screen_idx, first, fields[0].unit, fields[0].description,
+        second, fields[1].unit, fields[1].description);
 }
 
 static void graph_collect(int screen_idx, void *ctx, WidgetPathFn add) {
@@ -514,7 +367,8 @@ void update_graph_display_for_screen(int screen_num) {
     } else {
         series2.unit = "";
         series2.description = "";
-        series2.bind(NAN);
+        series2.path = "";
+        series2.bind(invalid_sample());
     }
     FieldView fields[2] = { series1.view, series2.view };
     graph_update(screen_num, fields, 2);
@@ -522,31 +376,26 @@ void update_graph_display_for_screen(int screen_num) {
 
 // --- compass -----------------------------------------------------------------
 
-static void compass_read_field(const String &path, HeldField *out) {
-    if (path.length() == 0) {
-        out->unit = "";
-        out->description = "";
-        out->bind(NAN);
-        return;
-    }
-    float value = get_sensor_sample_by_path(path).value;
-    out->unit = get_sensor_unit_by_path(path);
-    out->description = get_sensor_description_by_path(path);
-    value = convert_unit(value, out->unit, path, out->unit);
-    out->bind(value);
-}
-
 static void compass_update(int screen_num, const FieldView *fields, int field_count) {
     if (screen_num < 1 || screen_num > 5 || field_count < 3) return;
     int screen_idx = screen_num - 1;
     String hdg_path = String(screen_configs[screen_idx].number_path);
     if (hdg_path.length() == 0) hdg_path = "navigation.headingMagnetic";
-    if (!isnan(fields[0].sample.value)) {
+    present_fault(screen_idx, "hdg", 40, 20, 400, 300, fields[0]);
+    if (fields[0].sample.valid) {
         bool is_true = (hdg_path.indexOf("True") >= 0 || hdg_path.indexOf("true") >= 0);
         compass_display_update(screen_idx, fields[0].sample.value, is_true ? 1 : 0);
     }
-    compass_display_update_bl(screen_idx, fields[1].sample.value, fields[1].unit, fields[1].description);
-    compass_display_update_br(screen_idx, fields[2].sample.value, fields[2].unit, fields[2].description);
+    if (fields[1].path && fields[1].path[0] != '\0') {
+        present_fault(screen_idx, "cbl", 0, 320, 230, 160, fields[1]);
+        compass_display_update_bl(screen_idx, fields[1].sample.valid ? fields[1].sample.value : NAN,
+            fields[1].unit, fields[1].description);
+    }
+    if (fields[2].path && fields[2].path[0] != '\0') {
+        present_fault(screen_idx, "cbr", 250, 320, 230, 160, fields[2]);
+        compass_display_update_br(screen_idx, fields[2].sample.valid ? fields[2].sample.value : NAN,
+            fields[2].unit, fields[2].description);
+    }
 }
 
 static void compass_collect(int screen_idx, void *ctx, WidgetPathFn add) {
@@ -570,16 +419,18 @@ static void compass_run(int screen_num) {
     int screen_idx = screen_num - 1;
     String hdg_path = String(screen_configs[screen_idx].number_path);
     if (hdg_path.length() == 0) hdg_path = "navigation.headingMagnetic";
-    float hdg_rad = get_sensor_sample_by_path(hdg_path).value;
+    Sample heading_sample = get_sensor_sample_by_path(hdg_path);
     HeldField heading;
+    heading.path = hdg_path;
     heading.unit = "";
     heading.description = "";
-    heading.bind(isnan(hdg_rad) ? NAN : convert_angle_rad(hdg_rad));
+    if (heading_sample.valid) heading_sample.value = convert_angle_rad(heading_sample.value);
+    heading.bind(heading_sample);
 
     HeldField bl;
     HeldField br;
-    compass_read_field(String(screen_configs[screen_idx].quad_bl_path), &bl);
-    compass_read_field(String(screen_configs[screen_idx].quad_br_path), &br);
+    read_path(String(screen_configs[screen_idx].quad_bl_path), &bl);
+    read_path(String(screen_configs[screen_idx].quad_br_path), &br);
     FieldView fields[3] = { heading.view, bl.view, br.view };
     compass_update(screen_num, fields, 3);
 }
@@ -588,7 +439,10 @@ static void compass_run(int screen_num) {
 
 static void position_update(int screen_num, const FieldView *fields, int field_count) {
     if (screen_num < 1 || screen_num > 5 || field_count < 2) return;
-    position_display_update(screen_num - 1, fields[0].sample.value, fields[1].sample.value, g_nav_datetime);
+    int screen_idx = screen_num - 1;
+    present_fault(screen_idx, "pos", 40, 120, 400, 240, fields[0]);
+    if (!fields[0].sample.valid) return;
+    position_display_update(screen_idx, fields[0].sample.value, fields[1].sample.value, g_nav_datetime);
 }
 
 static void position_collect(int screen_idx, void *ctx, WidgetPathFn add) {
@@ -605,13 +459,16 @@ static void position_create(int s);
 
 static void position_run(int screen_num) {
     if (screen_num < 1 || screen_num > 5) return;
+    bool fix = nav_position_valid();
+    Sample lat = invalid_sample();
+    lat.value = (float)g_nav_latitude;
+    lat.valid = fix;
+    Sample lon = invalid_sample();
+    lon.value = (float)g_nav_longitude;
+    lon.valid = fix;
     FieldView fields[2];
-    fields[0].sample = make_sample((float)g_nav_latitude);
-    fields[0].unit = "";
-    fields[0].description = "";
-    fields[1].sample = make_sample((float)g_nav_longitude);
-    fields[1].unit = "";
-    fields[1].description = "";
+    assign_field(&fields[0], lat, "navigation.position");
+    assign_field(&fields[1], lon, "navigation.position");
     position_update(screen_num, fields, 2);
 }
 
@@ -619,9 +476,15 @@ static void position_run(int screen_num) {
 
 static void ais_update(int screen_num, const FieldView *fields, int field_count) {
     if (screen_num < 1 || screen_num > 5 || field_count < 4) return;
-    ais_display_update(screen_num - 1,
-        fields[0].sample.value, fields[1].sample.value,
-        fields[2].sample.value, fields[3].sample.value);
+    int screen_idx = screen_num - 1;
+    present_fault(screen_idx, "ais", 80, 140, 320, 180, fields[0]);
+    present_fault(screen_idx, "cog", 0, 400, 230, 70, fields[2]);
+    present_fault(screen_idx, "sog", 250, 400, 230, 70, fields[3]);
+    float lat = fields[0].sample.valid ? fields[0].sample.value : NAN;
+    float lon = fields[1].sample.valid ? fields[1].sample.value : NAN;
+    float cog = fields[2].sample.valid ? fields[2].sample.value : NAN;
+    float sog = fields[3].sample.valid ? fields[3].sample.value : NAN;
+    ais_display_update(screen_idx, lat, lon, cog, sog);
 }
 
 static void ais_collect(int screen_idx, void *ctx, WidgetPathFn add) {
@@ -642,17 +505,22 @@ static void ais_run(int screen_num) {
     uint16_t sk_port = get_signalk_server_port();
     ais_fetch_targets(sk_ip.c_str(), sk_port);
 
-    float own_cog_rad = get_sensor_sample_by_path("navigation.courseOverGroundTrue").value;
-    float own_sog_ms = get_sensor_sample_by_path("navigation.speedOverGround").value;
+    bool fix = nav_position_valid();
+    Sample lat = invalid_sample();
+    lat.value = (float)g_nav_latitude;
+    lat.valid = fix;
+    Sample lon = invalid_sample();
+    lon.value = (float)g_nav_longitude;
+    lon.valid = fix;
+    Sample cog = get_sensor_sample_by_path("navigation.courseOverGroundTrue");
+    if (cog.valid) cog.value = convert_angle_rad(cog.value);
+    Sample sog = get_sensor_sample_by_path("navigation.speedOverGround");
+    if (sog.valid) sog.value = convert_speed(sog.value);
     FieldView fields[4];
-    fields[0].sample = make_sample((float)g_nav_latitude);
-    fields[1].sample = make_sample((float)g_nav_longitude);
-    fields[2].sample = make_sample(isnan(own_cog_rad) ? NAN : convert_angle_rad(own_cog_rad));
-    fields[3].sample = make_sample(isnan(own_sog_ms) ? NAN : convert_speed(own_sog_ms));
-    for (int i = 0; i < 4; i++) {
-        fields[i].unit = "";
-        fields[i].description = "";
-    }
+    assign_field(&fields[0], lat, "navigation.position");
+    assign_field(&fields[1], lon, "navigation.position");
+    assign_field(&fields[2], cog, "navigation.courseOverGroundTrue");
+    assign_field(&fields[3], sog, "navigation.speedOverGround");
     // Targets were fetched above, before course and speed were read.
     ais_update(screen_num, fields, 4);
 }
@@ -661,9 +529,14 @@ static void ais_run(int screen_num) {
 
 static void anchor_update(int screen_num, const FieldView *fields, int field_count) {
     if (screen_num < 1 || screen_num > 5 || field_count < 5) return;
-    anchor_display_update(screen_num - 1,
-        fields[0].sample.value, fields[1].sample.value,
-        fields[2].sample.value, fields[3].sample.value, fields[4].sample.value);
+    int screen_idx = screen_num - 1;
+    present_fault(screen_idx, "anc", 70, 80, 340, 220, fields[0]);
+    float lat = fields[0].sample.valid ? fields[0].sample.value : NAN;
+    float lon = fields[1].sample.valid ? fields[1].sample.value : NAN;
+    float cog = fields[2].sample.valid ? fields[2].sample.value : NAN;
+    float sog = fields[3].sample.valid ? fields[3].sample.value : NAN;
+    float depth = fields[4].sample.valid ? fields[4].sample.value : NAN;
+    anchor_display_update(screen_idx, lat, lon, cog, sog, depth);
 }
 
 static void anchor_collect(int screen_idx, void *ctx, WidgetPathFn add) {
@@ -679,53 +552,38 @@ static void anchor_create(int s);
 static void anchor_run(int screen_num) {
     if (screen_num < 1 || screen_num > 5) return;
     int screen_idx = screen_num - 1;
-    float cog_rad = get_sensor_sample_by_path("navigation.courseOverGroundTrue").value;
-    float sog_ms = get_sensor_sample_by_path("navigation.speedOverGround").value;
-    float cog_deg = isnan(cog_rad) ? NAN : cog_rad * (180.0f / (float)M_PI);
-    float depth_m = NAN;
+    bool fix = nav_position_valid();
+    Sample lat = invalid_sample();
+    lat.value = (float)g_nav_latitude;
+    lat.valid = fix;
+    Sample lon = invalid_sample();
+    lon.value = (float)g_nav_longitude;
+    lon.valid = fix;
+    Sample cog = get_sensor_sample_by_path("navigation.courseOverGroundTrue");
+    if (cog.valid) cog.value = cog.value * (180.0f / (float)M_PI);
+    Sample sog = get_sensor_sample_by_path("navigation.speedOverGround");
+    Sample depth = invalid_sample();
     if (screen_configs[screen_idx].number_path[0] != '\0') {
-        depth_m = get_sensor_sample_by_path(String(screen_configs[screen_idx].number_path)).value;
+        depth = get_sensor_sample_by_path(String(screen_configs[screen_idx].number_path));
     }
     FieldView fields[5];
-    fields[0].sample = make_sample((float)g_nav_latitude);
-    fields[1].sample = make_sample((float)g_nav_longitude);
-    fields[2].sample = make_sample(cog_deg);
-    fields[3].sample = make_sample(sog_ms);
-    fields[4].sample = make_sample(depth_m);
-    for (int i = 0; i < 5; i++) {
-        fields[i].unit = "";
-        fields[i].description = "";
-    }
+    assign_field(&fields[0], lat, "navigation.position");
+    assign_field(&fields[1], lon, "navigation.position");
+    assign_field(&fields[2], cog, "navigation.courseOverGroundTrue");
+    assign_field(&fields[3], sog, "navigation.speedOverGround");
+    assign_field(&fields[4], depth, screen_configs[screen_idx].number_path);
     anchor_update(screen_num, fields, 5);
 }
 
 // --- gauge needles -----------------------------------------------------------
 
-static bool gauge_read(int screen_num, float *top, float *bottom) {
-    switch (screen_num) {
-        case 1:
-            *top = get_sensor_sample(SCREEN1_RPM).value;
-            *bottom = get_sensor_sample(SCREEN1_COOLANT_TEMP).value;
-            return true;
-        case 2:
-            *top = get_sensor_sample(SCREEN2_RPM).value;
-            *bottom = get_sensor_sample(SCREEN2_FUEL).value;
-            return true;
-        case 3:
-            *top = get_sensor_sample(SCREEN3_COOLANT_TEMP).value;
-            *bottom = get_sensor_sample(SCREEN3_EXHAUST_TEMP).value;
-            return true;
-        case 4:
-            *top = get_sensor_sample(SCREEN4_FUEL).value;
-            *bottom = get_sensor_sample(SCREEN4_COOLANT_TEMP).value;
-            return true;
-        case 5:
-            *top = get_sensor_sample(SCREEN5_OIL_PRESSURE).value;
-            *bottom = get_sensor_sample(SCREEN5_COOLANT_TEMP).value;
-            return true;
-        default:
-            return false;
-    }
+// Showing an already visible object still invalidates it. Only touch the flag
+// when it changes.
+static void set_needle_hidden(lv_obj_t *needle, bool hidden) {
+    if (!needle) return;
+    if (lv_obj_has_flag(needle, LV_OBJ_FLAG_HIDDEN) == hidden) return;
+    if (hidden) lv_obj_add_flag(needle, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_clear_flag(needle, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void gauge_needles(int screen_num, lv_obj_t **top, lv_obj_t **bottom) {
@@ -754,43 +612,77 @@ static void gauge_icons(int screen_num, lv_obj_t **top, lv_obj_t **bottom) {
     }
 }
 
+extern "C" float ui_get_runtime_value(int screen_idx, int gauge_idx);
+
+// Last icon style per screen and gauge: 0 unknown, 1 no sample, 2+ zone.
+// _ui_apply_icon_style invalidates the icon every call, so it runs only when
+// this changes.
+static uint8_t s_icon_key[5][2];
+
+static uint8_t icon_style_key(int screen_idx, int gauge) {
+    float v = ui_get_runtime_value(screen_idx, gauge);
+    if (isnan(v)) return 1;
+    int zone = 1;
+    for (int z = 1; z <= 4; ++z) {
+        float mn = screen_configs[screen_idx].min[gauge][z];
+        float mx = screen_configs[screen_idx].max[gauge][z];
+        if (mn == mx) continue;
+        if (v >= mn && v <= mx) { zone = z; break; }
+    }
+    return (uint8_t)(1 + zone);
+}
+
+static void restyle_icon(lv_obj_t *icon, int screen_idx, int gauge) {
+    if (!icon) return;
+#if defined(BOARD_ID_LCD7)
+    // Zoom 250 sends every icon draw through the software transform. On
+    // the 7" that is ~15 ms per icon per frame. Native size is 2% larger.
+    lv_img_set_zoom(icon, LV_IMG_ZOOM_NONE);
+#endif
+    uint8_t key = icon_style_key(screen_idx, gauge);
+    if (s_icon_key[screen_idx][gauge] == key) return;
+    s_icon_key[screen_idx][gauge] = key;
+    _ui_apply_icon_style(icon, screen_idx, gauge);
+}
+
 static void gauge_update(int screen_num, const FieldView *fields, int field_count) {
-    if (field_count < 2) return;
-    static bool initialized[6] = {false, false, false, false, false, false};
+    if (field_count < 2 || screen_num < 1 || screen_num > 5) return;
+    int screen_idx = screen_num - 1;
+    bool show_bottom = screen_configs[screen_idx].show_bottom != 0;
 
     lv_obj_t *top_needle = NULL;
     lv_obj_t *bottom_needle = NULL;
     gauge_needles(screen_num, &top_needle, &bottom_needle);
 
-    float top_value = fields[0].sample.value;
-    float bottom_value = fields[1].sample.value;
-    int16_t top_angle, bottom_angle;
-
-    if (!initialized[screen_num]) {
-        top_angle = 0;
-        bottom_angle = 180;
-        initialized[screen_num] = true;
-    } else {
-        if (!isnan(top_value)) {
-            top_angle = value_to_angle_for_param(top_value, screen_num - 1, 0);
-        } else {
-            top_angle = last_top_angle[screen_num];
-        }
-        if (!isnan(bottom_value)) {
-            bottom_angle = value_to_angle_for_param(bottom_value, screen_num - 1, 1);
-        } else {
-            bottom_angle = last_bottom_angle[screen_num];
-        }
+    // A hidden needle is not a reading. The cross is drawn after it is hidden.
+    if (!fields[0].sample.valid) set_needle_hidden(top_needle, true);
+    present_fault(screen_idx, "top", 20, 8, 440, 210, fields[0]);
+    if (fields[0].sample.valid) {
+        set_needle_hidden(top_needle, false);
+        int16_t top_angle = value_to_angle_for_param(fields[0].sample.value, screen_idx, 0);
+        animate_generic_needle(top_needle, last_top_angle[screen_num], top_angle, false);
     }
 
-    animate_generic_needle(top_needle, last_top_angle[screen_num], top_angle, false);
-    animate_generic_needle(bottom_needle, last_bottom_angle[screen_num], bottom_angle, true);
+    if (!show_bottom) {
+        set_needle_hidden(bottom_needle, true);
+        char id[24];
+        snprintf(id, sizeof(id), "%d-bot", screen_idx);
+        fault_flag_hide(id);
+    } else {
+        if (!fields[1].sample.valid) set_needle_hidden(bottom_needle, true);
+        present_fault(screen_idx, "bot", 20, 262, 440, 210, fields[1]);
+        if (fields[1].sample.valid) {
+            set_needle_hidden(bottom_needle, false);
+            int16_t bottom_angle = value_to_angle_for_param(fields[1].sample.value, screen_idx, 1);
+            animate_generic_needle(bottom_needle, last_bottom_angle[screen_num], bottom_angle, true);
+        }
+    }
 
     lv_obj_t *top_icon = NULL;
     lv_obj_t *bottom_icon = NULL;
     gauge_icons(screen_num, &top_icon, &bottom_icon);
-    if (top_icon) _ui_apply_icon_style(top_icon, screen_num - 1, 0);
-    if (bottom_icon) _ui_apply_icon_style(bottom_icon, screen_num - 1, 1);
+    restyle_icon(top_icon, screen_idx, 0);
+    restyle_icon(bottom_icon, screen_idx, 1);
 }
 
 static void gauge_collect(int screen_idx, void *ctx, WidgetPathFn add) {
@@ -807,16 +699,15 @@ static void gauge_destroy(int s) {
 static void gauge_create(int s);
 
 static void gauge_run(int screen_num) {
-    float top = 0.0f;
-    float bottom = 0.0f;
-    if (!gauge_read(screen_num, &top, &bottom)) return;
+    if (screen_num < 1 || screen_num > 5) return;
+    int screen_idx = screen_num - 1;
+    Sample top = get_sensor_sample(screen_idx * 2);
+    Sample bottom = get_sensor_sample(screen_idx * 2 + 1);
+    String top_path = get_signalk_path_by_index(screen_idx * 2);
+    String bottom_path = get_signalk_path_by_index(screen_idx * 2 + 1);
     FieldView fields[2];
-    fields[0].sample = make_sample(top);
-    fields[0].unit = "";
-    fields[0].description = "";
-    fields[1].sample = make_sample(bottom);
-    fields[1].unit = "";
-    fields[1].description = "";
+    assign_field(&fields[0], top, top_path.c_str());
+    assign_field(&fields[1], bottom, bottom_path.c_str());
     gauge_update(screen_num, fields, 2);
 }
 
@@ -982,15 +873,13 @@ static void gauge_create(int s) {
     position_destroy(s);
     ais_destroy(s);
     anchor_destroy(s);
+    s_icon_key[s][0] = 0;
+    s_icon_key[s][1] = 0;
+    // Stay hidden until gauge_update has a finite sample. A needle at 0 is a reading.
     lv_obj_t *upper_needle = get_upper_needle_obj_for_screen(s);
-    if (upper_needle) lv_obj_clear_flag(upper_needle, LV_OBJ_FLAG_HIDDEN);
+    if (upper_needle) lv_obj_add_flag(upper_needle, LV_OBJ_FLAG_HIDDEN);
     lv_obj_t *lower_needle = get_lower_needle_obj_for_screen(s);
-    if (lower_needle) {
-        if (screen_configs[s].show_bottom)
-            lv_obj_clear_flag(lower_needle, LV_OBJ_FLAG_HIDDEN);
-        else
-            lv_obj_add_flag(lower_needle, LV_OBJ_FLAG_HIDDEN);
-    }
+    if (lower_needle) lv_obj_add_flag(lower_needle, LV_OBJ_FLAG_HIDDEN);
 }
 
 static const WidgetOps kNumberOps = { number_create, number_destroy, number_update, number_collect };
@@ -1021,6 +910,7 @@ const WidgetOps *widget_ops_for(int display_type) {
 }
 
 void widget_apply_type(int screen_idx) {
+    fault_flag_clear_screen(screen_idx);
     const WidgetOps *ops = widget_ops_for(screen_configs[screen_idx].display_type);
     if (ops && ops->create) ops->create(screen_idx);
 }

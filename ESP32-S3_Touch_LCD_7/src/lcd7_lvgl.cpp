@@ -6,7 +6,12 @@
 #include "board_profile.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
+#include <SD.h>
 #include <WiFi.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 extern bool g_screen_is_off;
 extern uint32_t g_last_activity_ms;
@@ -27,6 +32,85 @@ static int letterbox_x() {
 }
 
 void Lvgl_print(const char *buf) { (void)buf; }
+
+// LVGL "S:" paths are the SD card. The square driver is not linked here.
+typedef struct {
+    bool is_posix;
+    File *file;
+    FILE *fp;
+} lv_file_wrapper_t;
+
+static void *fs_open_cb(lv_fs_drv_t *drv, const char *path, lv_fs_mode_t mode) {
+    (void)drv;
+    (void)mode;
+    const char *sd_path = path;
+    if (path && strlen(path) > 2 && path[1] == ':' && path[2] == '/') sd_path = path + 2;
+    File *file = new File(SD.open(sd_path, FILE_READ));
+    if (file && *file) {
+        lv_file_wrapper_t *w = (lv_file_wrapper_t *)malloc(sizeof(lv_file_wrapper_t));
+        if (!w) { file->close(); delete file; return NULL; }
+        w->is_posix = false;
+        w->file = file;
+        w->fp = NULL;
+        return w;
+    }
+    delete file;
+    char alt[256];
+    snprintf(alt, sizeof(alt), "/sdcard%s", sd_path ? sd_path : "");
+    FILE *fp = fopen(alt, "rb");
+    if (!fp) return NULL;
+    lv_file_wrapper_t *w = (lv_file_wrapper_t *)malloc(sizeof(lv_file_wrapper_t));
+    if (!w) { fclose(fp); return NULL; }
+    w->is_posix = true;
+    w->file = NULL;
+    w->fp = fp;
+    return w;
+}
+
+static lv_fs_res_t fs_close_cb(lv_fs_drv_t *drv, void *file_p) {
+    (void)drv;
+    lv_file_wrapper_t *w = (lv_file_wrapper_t *)file_p;
+    if (!w) return LV_FS_RES_OK;
+    if (w->is_posix) fclose(w->fp);
+    else { w->file->close(); delete w->file; }
+    free(w);
+    return LV_FS_RES_OK;
+}
+
+static lv_fs_res_t fs_read_cb(lv_fs_drv_t *drv, void *file_p, void *buf, uint32_t btr, uint32_t *br) {
+    (void)drv;
+    lv_file_wrapper_t *w = (lv_file_wrapper_t *)file_p;
+    if (!w) return LV_FS_RES_UNKNOWN;
+    if (w->is_posix) *br = (uint32_t)fread(buf, 1, btr, w->fp);
+    else *br = w->file->read((uint8_t *)buf, btr);
+    return LV_FS_RES_OK;
+}
+
+static lv_fs_res_t fs_seek_cb(lv_fs_drv_t *drv, void *file_p, uint32_t pos, lv_fs_whence_t whence) {
+    (void)drv;
+    lv_file_wrapper_t *w = (lv_file_wrapper_t *)file_p;
+    if (!w) return LV_FS_RES_UNKNOWN;
+    if (w->is_posix) {
+        int origin = (whence == LV_FS_SEEK_CUR) ? SEEK_CUR : (whence == LV_FS_SEEK_END) ? SEEK_END : SEEK_SET;
+        return fseek(w->fp, (long)pos, origin) == 0 ? LV_FS_RES_OK : LV_FS_RES_UNKNOWN;
+    }
+    SeekMode sm = (whence == LV_FS_SEEK_CUR) ? SeekCur : (whence == LV_FS_SEEK_END) ? SeekEnd : SeekSet;
+    return w->file->seek(pos, sm) ? LV_FS_RES_OK : LV_FS_RES_UNKNOWN;
+}
+
+static lv_fs_res_t fs_tell_cb(lv_fs_drv_t *drv, void *file_p, uint32_t *pos_p) {
+    (void)drv;
+    lv_file_wrapper_t *w = (lv_file_wrapper_t *)file_p;
+    if (!w || !pos_p) return LV_FS_RES_UNKNOWN;
+    if (w->is_posix) {
+        long p = ftell(w->fp);
+        if (p < 0) return LV_FS_RES_UNKNOWN;
+        *pos_p = (uint32_t)p;
+        return LV_FS_RES_OK;
+    }
+    *pos_p = w->file->position();
+    return LV_FS_RES_OK;
+}
 
 void Lvgl_Display_LCD(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_p) {
     int x0 = letterbox_x();
@@ -93,13 +177,31 @@ static void *alloc_buf(size_t bytes) {
 
 void Lvgl_Init(void) {
     lv_init();
-    size_t px = (size_t)(kUiW * kUiH / 5);
+    static lv_fs_drv_t fs_drv;
+    lv_fs_drv_init(&fs_drv);
+    fs_drv.letter = 'S';
+    fs_drv.open_cb = fs_open_cb;
+    fs_drv.close_cb = fs_close_cb;
+    fs_drv.read_cb = fs_read_cb;
+    fs_drv.seek_cb = fs_seek_cb;
+    fs_drv.tell_cb = fs_tell_cb;
+    lv_fs_drv_register(&fs_drv);
+    // Render into internal SRAM. The panel DMA reads the PSRAM framebuffer at
+    // ~30 MB/s, so drawing into PSRAM as well ran at a few MB/s. The flush is
+    // a synchronous copy, so a second buffer would never be in flight.
+    size_t px = (size_t)(kUiW * 40);
     size_t bytes = px * sizeof(lv_color_t);
-    buf1 = (lv_color_t *)alloc_buf(bytes);
-    buf2 = (lv_color_t *)alloc_buf(bytes);
-    Serial.printf("[LCD7] LVGL buffers %u bytes buf1=%p buf2=%p letterbox x=%d\n",
-                  (unsigned)bytes, buf1, buf2, letterbox_x());
-    if (!buf1 || !buf2) {
+    buf1 = (lv_color_t *)heap_caps_aligned_alloc(64, bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!buf1) {
+        px = (size_t)(kUiW * kUiH / 5);
+        bytes = px * sizeof(lv_color_t);
+        buf1 = (lv_color_t *)alloc_buf(bytes);
+    }
+    buf2 = NULL;
+    Serial.printf("[LCD7] LVGL buffer %u bytes at %p (%s) letterbox x=%d\n",
+                  (unsigned)bytes, buf1,
+                  esp_ptr_internal(buf1) ? "SRAM" : "PSRAM", letterbox_x());
+    if (!buf1) {
         ets_printf("[LCD7] LVGL buffer alloc failed\r\n");
         return;
     }

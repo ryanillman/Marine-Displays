@@ -50,7 +50,11 @@ static const BoardProfile kProfile = {
 #elif defined(BOARD_ID_LCD7)
 
 // ESP32-S3-Touch-LCD-7 (800x480). These pins are not the 4" map above.
-// Waveshare demo: 16 MHz, porches 4/8/8 and 4/8/8, data clocked on the falling edge.
+// Waveshare clocks this panel at 16 MHz. The glass rolls the picture at
+// 10 MHz, so the clock stays at the vendor rate. Porches stay 4/8/8 and
+// 4/8/8. Data is clocked on the falling edge. The 7" build uses the
+// Arduino 3 RGB driver, which copies each chunk through an SRAM bounce
+// buffer (width * 10) so a PSRAM stall does not shift the line.
 // DATA0 is GPIO14 (B3). EXIO5 stays low so USB keeps GPIO19/20 and CAN stays off.
 static const RgbPins kLcd7Pins = {
     46, 3, 5, 7, -1,

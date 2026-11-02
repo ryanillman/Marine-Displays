@@ -343,6 +343,10 @@ void graph_display_update(int screen_num, float value, const char* unit, const c
     uint8_t time_range = screen_configs[screen_num].graph_time_range;
     if (time_range > 5) time_range = 0;
     
+    // A gap is not a zero. Leave the last point in place and do not
+    // advance the sample clock, so the next live value records promptly.
+    if (isnan(value)) return;
+
     unsigned long now = millis();
     unsigned long interval = sample_intervals[time_range];
     

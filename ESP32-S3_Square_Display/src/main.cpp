@@ -73,26 +73,40 @@ unsigned long last_alarm_log_time = 0;  // rate-limit alarm serial output
 #define ALARM_LOG_INTERVAL_MS 5000
 
 // Animation callback for upper needle
+// Each needle owns its points, and the line object sits at the needle's own
+// bounding box. An lv_line's box runs from its position to its farthest
+// point, so a line left at (0,0) dirties the whole top-left of the gauge on
+// every step, icons and face included. On the 7" that redraw is the frame rate.
+static lv_point_t s_needle_pts[2][5][2];
+
+static void place_needle(lv_obj_t* needle, int screen, int gauge, int32_t v) {
+    NeedleStyle s = get_needle_style(screen, gauge);
+    float rad = (v - 90) * PI / 180.0f;
+    lv_coord_t x0 = s.cx + (int16_t)(s.inner * cos(rad));
+    lv_coord_t y0 = s.cy + (int16_t)(s.inner * sin(rad));
+    lv_coord_t x1 = s.cx + (int16_t)(s.outer * cos(rad));
+    lv_coord_t y1 = s.cy + (int16_t)(s.outer * sin(rad));
+    lv_coord_t ox = LV_MIN(x0, x1);
+    lv_coord_t oy = LV_MIN(y0, y1);
+    lv_point_t* pts = s_needle_pts[gauge][screen];
+    pts[0].x = x0 - ox;
+    pts[0].y = y0 - oy;
+    pts[1].x = x1 - ox;
+    pts[1].y = y1 - oy;
+    lv_obj_set_pos(needle, ox, oy);
+    lv_line_set_points(needle, pts, 2);
+}
+
 static void needle_anim_cb(void * var, int32_t v) {
     lv_obj_t* needle = (lv_obj_t*)var;
     if (needle != NULL) {
-        // Determine which screen/gauge this needle object corresponds to
         int screen = 0;
-        int gauge = 0; // 0 = top
-        if (needle == ui_Needle) { screen = 0; gauge = 0; }
-        else if (needle == ui_Needle2) { screen = 1; gauge = 0; }
-        else if (needle == ui_Needle3) { screen = 2; gauge = 0; }
-        else if (needle == ui_Needle4) { screen = 3; gauge = 0; }
-        else if (needle == ui_Needle5) { screen = 4; gauge = 0; }
-
-        NeedleStyle s = get_needle_style(screen, gauge);
-        float rad = (v - 90) * PI / 180.0f;
-        static lv_point_t points[2];
-        points[0].x = s.cx + (int16_t)(s.inner * cos(rad));
-        points[0].y = s.cy + (int16_t)(s.inner * sin(rad));
-        points[1].x = s.cx + (int16_t)(s.outer * cos(rad));
-        points[1].y = s.cy + (int16_t)(s.outer * sin(rad));
-        lv_line_set_points(needle, points, 2);
+        if (needle == ui_Needle) screen = 0;
+        else if (needle == ui_Needle2) screen = 1;
+        else if (needle == ui_Needle3) screen = 2;
+        else if (needle == ui_Needle4) screen = 3;
+        else if (needle == ui_Needle5) screen = 4;
+        place_needle(needle, screen, 0, v);
     }
 }
 
@@ -101,21 +115,12 @@ static void lower_needle_anim_cb(void * var, int32_t v) {
     lv_obj_t* needle = (lv_obj_t*)var;
     if (needle != NULL) {
         int screen = 0;
-        int gauge = 1; // bottom
-        if (needle == ui_Lower_Needle) { screen = 0; gauge = 1; }
-        else if (needle == ui_Lower_Needle2) { screen = 1; gauge = 1; }
-        else if (needle == ui_Lower_Needle3) { screen = 2; gauge = 1; }
-        else if (needle == ui_Lower_Needle4) { screen = 3; gauge = 1; }
-        else if (needle == ui_Lower_Needle5) { screen = 4; gauge = 1; }
-
-        NeedleStyle s = get_needle_style(screen, gauge);
-        float rad = (v - 90) * PI / 180.0f;
-        static lv_point_t points[2];
-        points[0].x = s.cx + (int16_t)(s.inner * cos(rad));
-        points[0].y = s.cy + (int16_t)(s.inner * sin(rad));
-        points[1].x = s.cx + (int16_t)(s.outer * cos(rad));
-        points[1].y = s.cy + (int16_t)(s.outer * sin(rad));
-        lv_line_set_points(needle, points, 2);
+        if (needle == ui_Lower_Needle) screen = 0;
+        else if (needle == ui_Lower_Needle2) screen = 1;
+        else if (needle == ui_Lower_Needle3) screen = 2;
+        else if (needle == ui_Lower_Needle4) screen = 3;
+        else if (needle == ui_Lower_Needle5) screen = 4;
+        place_needle(needle, screen, 1, v);
     }
 }
 
@@ -271,6 +276,9 @@ void test_move_gauge(int screen, int gauge, int angle) {
 // ets_printf writes directly to hardware UART0 (visible on CH343 monitor)
 // even when Serial uses USB-OTG CDC (ARDUINO_USB_CDC_ON_BOOT=1).
 extern "C" int ets_printf(const char *fmt, ...);
+
+// The 7" fills empty screen paths from the SD card. Other boards leave them.
+__attribute__((weak)) void board_apply_default_assets(void) {}
 
 void setup() {
     // Immediate hardware UART0 marker - visible on CH343 even before USB CDC comes up
@@ -442,6 +450,7 @@ void setup() {
     // Load persisted preferences BEFORE initializing the UI so dynamic image paths
     // are available during screen construction.
     load_preferences();
+    board_apply_default_assets();
 
     // LVGL
     Lvgl_Init();
@@ -701,20 +710,14 @@ void loop() {
             last_needle_update = now;
         }
         
-        // Update icon styles and optionally trigger buzzer alerts per configured zone
+        // Recolor gauge icons from a live sample. Beeps are alarm_monitor_poll.
         {
-            static int last_zone_state[2] = {-1, -1}; // last selected zone per gauge (top=0,bottom=1)
-            unsigned long ALERT_COOLDOWN_MS = 60000;
-            // Use user-configured buzzer cooldown (seconds) from settings. 0 => constant (no cooldown)
-            extern uint16_t buzzer_cooldown_sec;
-            if (buzzer_cooldown_sec == 0) ALERT_COOLDOWN_MS = 0;
-            else ALERT_COOLDOWN_MS = (unsigned long)buzzer_cooldown_sec * 1000UL;
+            static int last_zone_state[2] = {-1, -1};
 
             int current_screen = ui_get_current_screen();
             int screen_idx = current_screen - 1;
             if (screen_idx < 0) screen_idx = 0;
 
-            // Map icons for convenience
             lv_obj_t* icons[2] = { NULL, NULL };
             switch (current_screen) {
                 case 1: icons[0] = ui_TopIcon1; icons[1] = ui_BottomIcon1; break;
@@ -725,7 +728,6 @@ void loop() {
                 default: break;
             }
 
-            // Determine runtime values for top/bottom gauges for this screen
             float runtime_val[2] = { NAN, NAN };
             switch (current_screen) {
                 case 1:
@@ -752,192 +754,38 @@ void loop() {
                     break;
             }
 
-            // For each gauge, choose zone and optionally trigger buzzer if configured
-            for (int g = 0; g < 2; ++g) {
-                lv_obj_t* icon = icons[g];
-                if (icon == NULL) continue;
-                // Only apply gauge zone logic for gauge-type screens
-                // (number/dual/quad/graph screens use their own alarm checks)
-                if (screen_configs[screen_idx].display_type != DISPLAY_TYPE_GAUGE &&
-                    screen_configs[screen_idx].display_type != DISPLAY_TYPE_GAUGE_NUMBER) continue;
+            int dtype = screen_configs[screen_idx].display_type;
+            if (dtype == DISPLAY_TYPE_GAUGE || dtype == DISPLAY_TYPE_GAUGE_NUMBER) {
+                for (int g = 0; g < 2; ++g) {
+                    lv_obj_t* icon = icons[g];
+                    if (icon == NULL) continue;
+                    float val = runtime_val[g];
+                    if (isnan(val)) continue;
 
-                float val = runtime_val[g];
-                int chosen_zone = -1;
-                // Prefer the most specific matching zone (smallest range) so
-                // narrow alert zones win when ranges overlap.
-                float best_range = 1e30f;
-                for (int z = 1; z <= 4; ++z) {
-                    float mn = screen_configs[screen_idx].min[g][z];
-                    float mx = screen_configs[screen_idx].max[g][z];
-                    if (mn == mx) continue;
-                    if (!isnan(val) && val >= mn && val <= mx) {
-                        float range = mx - mn;
-                        if (range < best_range) { best_range = range; chosen_zone = z; }
-                    }
-                }
-                // If no numeric match but there is a configured zone and value is NaN,
-                // pick the first configured zone (fallback behavior).
-                if (chosen_zone == -1 && isnan(val)) {
+                    int chosen_zone = -1;
+                    float best_range = 1e30f;
                     for (int z = 1; z <= 4; ++z) {
                         float mn = screen_configs[screen_idx].min[g][z];
                         float mx = screen_configs[screen_idx].max[g][z];
-                        if (mn != mx) { chosen_zone = z; break; }
+                        if (mn == mx) continue;
+                        if (val >= mn && val <= mx) {
+                            float range = mx - mn;
+                            if (range < best_range) { best_range = range; chosen_zone = z; }
+                        }
                     }
-                }
-                if (chosen_zone == -1) chosen_zone = 1;
-                int current_state = chosen_zone - 1;
-
-                // Make icon visible and apply style for the chosen zone when it changes
-                if (current_state != last_zone_state[g]) {
-                    lv_obj_clear_flag(icon, LV_OBJ_FLAG_HIDDEN);
-                    _ui_apply_icon_style(icon, screen_idx, g);
-                    last_zone_state[g] = current_state;
-                }
-
-                // Check buzzer for Per-screen mode every cycle (not only on zone-change)
-                bool buz_enabled = (screen_configs[screen_idx].buzzer[g][chosen_zone] != 0);
-                unsigned long now = millis();
-                bool cooldown_expired = (now - last_buzzer_time > ALERT_COOLDOWN_MS);
-                if (buzzer_mode == 2 && buz_enabled && (first_run_buzzer || cooldown_expired)) {
-                    if (now - last_alarm_log_time > ALARM_LOG_INTERVAL_MS) {
-                        printf("[ALERT] screen=%d gauge=%d chosen_zone=%d val=%.2f buz_enabled=%d first_run=%d cooldown_expired=%d\n",
-                               screen_idx, g, chosen_zone, val, (int)buz_enabled, (int)first_run_buzzer, (int)cooldown_expired);
-                        last_alarm_log_time = now;
-                    }
-                    trigger_buzzer_alert();
-                    last_buzzer_time = now;
-                    first_run_buzzer = false;
-                }
-            }
-
-            // If Global buzzer mode is enabled, scan all screens for any configured buzzer zones
-            if (buzzer_mode == 1) {
-                unsigned long now = millis();
-                bool cooldown_expired = (now - last_buzzer_time > ALERT_COOLDOWN_MS);
-                if (first_run_buzzer || cooldown_expired) {
-                    bool fired = false;
-                    for (int s = 0; s < NUM_SCREENS && !fired; ++s) {
-                        // For each gauge on screen s
-                        for (int g = 0; g < 2 && !fired; ++g) {
-                            // Only check gauge zones for gauge-type screens
-                            if (screen_configs[s].display_type != DISPLAY_TYPE_GAUGE &&
-                                screen_configs[s].display_type != DISPLAY_TYPE_GAUGE_NUMBER) continue;
-                            // Get runtime value for that screen/gauge
-                            float rval = NAN;
-                            switch (s+1) {
-                                case 1: rval = (g==0) ? get_sensor_value(SCREEN1_RPM) : get_sensor_value(SCREEN1_COOLANT_TEMP); break;
-                                case 2: rval = (g==0) ? get_sensor_value(SCREEN2_RPM) : get_sensor_value(SCREEN2_FUEL); break;
-                                case 3: rval = (g==0) ? get_sensor_value(SCREEN3_COOLANT_TEMP) : get_sensor_value(SCREEN3_EXHAUST_TEMP); break;
-                                case 4: rval = (g==0) ? get_sensor_value(SCREEN4_FUEL) : get_sensor_value(SCREEN4_COOLANT_TEMP); break;
-                                case 5: rval = (g==0) ? get_sensor_value(SCREEN5_OIL_PRESSURE) : get_sensor_value(SCREEN5_COOLANT_TEMP); break;
-                                default: rval = NAN; break;
-                            }
-                            int chosen_zone = -1;
-                            float best_range = 1e30f;
-                            for (int z = 1; z <= 4; ++z) {
-                                float mn = screen_configs[s].min[g][z];
-                                float mx = screen_configs[s].max[g][z];
-                                if (mn == mx) continue;
-                                if (!isnan(rval) && rval >= mn && rval <= mx) {
-                                    float range = mx - mn;
-                                    if (range < best_range) { best_range = range; chosen_zone = z; }
-                                }
-                            }
-                            if (chosen_zone == -1 && isnan(rval)) {
-                                for (int z = 1; z <= 4; ++z) {
-                                    float mn = screen_configs[s].min[g][z];
-                                    float mx = screen_configs[s].max[g][z];
-                                    if (mn != mx) { chosen_zone = z; break; }
-                                }
-                            }
-                            if (chosen_zone == -1) chosen_zone = 1;
-                            bool buz_enabled = (screen_configs[s].buzzer[g][chosen_zone] != 0);
-                            if (buz_enabled) {
-                                if (now - last_alarm_log_time > ALARM_LOG_INTERVAL_MS) {
-                                    printf("[ALERT-GLOBAL] screen=%d gauge=%d chosen_zone=%d val=%.2f buz_enabled=%d\n",
-                                           s, g, chosen_zone, rval, (int)buz_enabled);
-                                    last_alarm_log_time = now;
-                                }
-                                trigger_buzzer_alert();
-                                last_buzzer_time = now;
-                                first_run_buzzer = false;
-                                fired = true;
-                                break;
-                            }
-                        }
-                        // Also check number display alarms for this screen
-                        if (!fired && screen_configs[s].display_type == DISPLAY_TYPE_NUMBER) {
-                            String npath = String(screen_configs[s].number_path);
-                            if (npath.length() > 0) {
-                                float nval = get_sensor_value_by_path(npath);
-                                if (!isnan(nval)) {
-                                    bool low_trip  = screen_configs[s].buzzer[0][1] && (nval < screen_configs[s].min[0][1]);
-                                    bool high_trip = screen_configs[s].buzzer[0][2] && (nval > screen_configs[s].max[0][2]);
-                                    if (low_trip || high_trip) {
-                                        trigger_buzzer_alert();
-                                        last_buzzer_time = now;
-                                        first_run_buzzer = false;
-                                        fired = true;
-                                    }
-                                }
-                            }
-                        }
-                        // Check dual display alarms: top=g0 z1/2, bottom=g1 z1/2
-                        if (!fired && screen_configs[s].display_type == DISPLAY_TYPE_DUAL) {
-                            float dv[2] = {
-                                get_sensor_value_by_path(String(screen_configs[s].dual_top_path)),
-                                get_sensor_value_by_path(String(screen_configs[s].dual_bottom_path))
-                            };
-                            for (int ch = 0; ch < 2 && !fired; ch++) {
-                                if (isnan(dv[ch])) continue;
-                                bool lt = screen_configs[s].buzzer[ch][1] && (dv[ch] < screen_configs[s].min[ch][1]);
-                                bool ht = screen_configs[s].buzzer[ch][2] && (dv[ch] > screen_configs[s].max[ch][2]);
-                                if (lt || ht) {
-                                    trigger_buzzer_alert(); last_buzzer_time = now;
-                                    first_run_buzzer = false; fired = true;
-                                }
-                            }
-                        }
-                        // Check quad display alarms: TL=g0z1/2, TR=g0z3/4, BL=g1z1/2, BR=g1z3/4
-                        if (!fired && screen_configs[s].display_type == DISPLAY_TYPE_QUAD) {
-                            struct { const char* path; int g, zl, zh; } qd[4] = {
-                                { screen_configs[s].quad_tl_path, 0, 1, 2 },
-                                { screen_configs[s].quad_tr_path, 0, 3, 4 },
-                                { screen_configs[s].quad_bl_path, 1, 1, 2 },
-                                { screen_configs[s].quad_br_path, 1, 3, 4 },
-                            };
-                            for (int q = 0; q < 4 && !fired; q++) {
-                                float qv = get_sensor_value_by_path(String(qd[q].path));
-                                if (isnan(qv)) continue;
-                                bool lt = screen_configs[s].buzzer[qd[q].g][qd[q].zl] && (qv < screen_configs[s].min[qd[q].g][qd[q].zl]);
-                                bool ht = screen_configs[s].buzzer[qd[q].g][qd[q].zh] && (qv > screen_configs[s].max[qd[q].g][qd[q].zh]);
-                                if (lt || ht) {
-                                    trigger_buzzer_alert(); last_buzzer_time = now;
-                                    first_run_buzzer = false; fired = true;
-                                }
-                            }
-                        }
-                        // Check gauge+number center alarm: min[1][1]/buzzer[1][1]=low, max[1][2]/buzzer[1][2]=high
-                        if (!fired && screen_configs[s].display_type == DISPLAY_TYPE_GAUGE_NUMBER) {
-                            String cpath = String(screen_configs[s].gauge_num_center_path);
-                            if (cpath.length() > 0) {
-                                float cv = get_sensor_value_by_path(cpath);
-                                if (!isnan(cv)) {
-                                    bool lt = screen_configs[s].buzzer[1][1] && (cv < screen_configs[s].min[1][1]);
-                                    bool ht = screen_configs[s].buzzer[1][2] && (cv > screen_configs[s].max[1][2]);
-                                    if (lt || ht) {
-                                        trigger_buzzer_alert(); last_buzzer_time = now;
-                                        first_run_buzzer = false; fired = true;
-                                    }
-                                }
-                            }
-                        }
+                    if (chosen_zone == -1) chosen_zone = 1;
+                    int current_state = chosen_zone - 1;
+                    if (current_state != last_zone_state[g]) {
+                        lv_obj_clear_flag(icon, LV_OBJ_FLAG_HIDDEN);
+                        _ui_apply_icon_style(icon, screen_idx, g);
+                        last_zone_state[g] = current_state;
                     }
                 }
             }
+            alarm_monitor_poll(current_screen);
         }
     }
-    
+
     // Deferred LVGL rebuild: HTTP save handlers set this flag instead of calling
     // apply_all_screen_visuals() directly (which would race with DMA flush).
     // We consume it here, just before lv_timer_handler(), when LVGL is idle.

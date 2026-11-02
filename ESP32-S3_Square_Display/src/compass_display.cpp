@@ -183,14 +183,14 @@ void compass_display_create(int n) {
 
     // ── Large heading number (below tape) ────────────────────────────────────
     c_hdg_lbl[n] = lv_label_create(c_bg[n]);
-    lv_label_set_text(c_hdg_lbl[n], "---\xc2\xb0");
+    lv_label_set_text(c_hdg_lbl[n], "");
     lv_obj_set_style_text_font(c_hdg_lbl[n], &inter_96, 0);
     lv_obj_set_style_text_color(c_hdg_lbl[n], lv_color_white(), 0);
     lv_obj_align(c_hdg_lbl[n], LV_ALIGN_TOP_MID, 0, 125);
 
     // ── Cardinal direction ────────────────────────────────────────────────────
     c_card_lbl[n] = lv_label_create(c_bg[n]);
-    lv_label_set_text(c_card_lbl[n], "---");
+    lv_label_set_text(c_card_lbl[n], "");
     lv_obj_set_style_text_font(c_card_lbl[n], &inter_24, 0);
     lv_obj_set_style_text_color(c_card_lbl[n], lv_color_make(180, 220, 255), 0);
     lv_obj_align(c_card_lbl[n], LV_ALIGN_TOP_RIGHT, -12, 13);
@@ -231,7 +231,7 @@ void compass_display_create(int n) {
     lv_obj_add_flag(c_bl_desc[n], LV_OBJ_FLAG_IGNORE_LAYOUT);
 
     c_bl_val[n] = lv_label_create(c_bg[n]);
-    lv_label_set_text(c_bl_val[n], "---");
+    lv_label_set_text(c_bl_val[n], "");
     lv_obj_set_size(c_bl_val[n], 220, LV_SIZE_CONTENT);
     lv_label_set_long_mode(c_bl_val[n], LV_LABEL_LONG_CLIP);
     lv_obj_set_style_text_align(c_bl_val[n], LV_TEXT_ALIGN_CENTER, 0);
@@ -261,7 +261,7 @@ void compass_display_create(int n) {
     lv_obj_add_flag(c_br_desc[n], LV_OBJ_FLAG_IGNORE_LAYOUT);
 
     c_br_val[n] = lv_label_create(c_bg[n]);
-    lv_label_set_text(c_br_val[n], "---");
+    lv_label_set_text(c_br_val[n], "");
     lv_obj_set_size(c_br_val[n], 220, LV_SIZE_CONTENT);
     lv_label_set_long_mode(c_br_val[n], LV_LABEL_LONG_CLIP);
     lv_obj_set_style_text_align(c_br_val[n], LV_TEXT_ALIGN_CENTER, 0);
@@ -364,7 +364,7 @@ void compass_display_update(int n, float heading_deg, int heading_true) {
 void compass_display_update_bl(int n, float value, const char* unit, const char* description) {
     if (n < 0 || n >= NUM_SCREENS || !c_bl_val[n]) return;
     char buf[64];
-    if (isnan(value)) snprintf(buf, sizeof(buf), "---");
+    if (isnan(value)) snprintf(buf, sizeof(buf), "");
     else              snprintf(buf, sizeof(buf), "%.1f", value);
     lv_label_set_text(c_bl_val[n],  buf);
     lv_label_set_text(c_bl_unit[n], unit        ? unit        : "");
@@ -374,7 +374,7 @@ void compass_display_update_bl(int n, float value, const char* unit, const char*
 void compass_display_update_br(int n, float value, const char* unit, const char* description) {
     if (n < 0 || n >= NUM_SCREENS || !c_br_val[n]) return;
     char buf[64];
-    if (isnan(value)) snprintf(buf, sizeof(buf), "---");
+    if (isnan(value)) snprintf(buf, sizeof(buf), "");
     else              snprintf(buf, sizeof(buf), "%.1f", value);
     lv_label_set_text(c_br_val[n],  buf);
     lv_label_set_text(c_br_unit[n], unit        ? unit        : "");

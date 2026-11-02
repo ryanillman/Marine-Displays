@@ -16,10 +16,20 @@ def after_upload(source, target, env):
 
     # Use PlatformIO's bundled esptool package so it works even when the
     # system Python doesn't have esptool installed.
-    esptool_dir = env.PioPlatform().get_package_dir("tool-esptoolpy") or ""
-    esptool_py  = os.path.join(esptool_dir, "esptool.py")
+    esptool_dir = ""
+    for pkg in ("tool-esptoolpy", "tool-esptool"):
+        try:
+            esptool_dir = env.PioPlatform().get_package_dir(pkg) or ""
+        except KeyError:
+            esptool_dir = ""
+        if esptool_dir:
+            break
+    esptool_py = os.path.join(esptool_dir, "esptool.py")
+    esptool_bin = os.path.join(esptool_dir, "esptool")
     if os.path.isfile(esptool_py):
         esptool_cmd = '"' + env.subst("$PYTHONEXE") + '" "' + esptool_py + '"'
+    elif os.path.isfile(esptool_bin):
+        esptool_cmd = '"' + esptool_bin + '"'
     else:
         # Fallback: try the module path (works inside PlatformIO's venv)
         esptool_cmd = '"' + env.subst("$PYTHONEXE") + '" -m esptool'

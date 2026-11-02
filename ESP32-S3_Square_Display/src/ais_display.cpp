@@ -4,6 +4,7 @@
 #include "unit_convert.h"
 #include <Arduino.h>
 #include <math.h>
+#include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <freertos/semphr.h>
@@ -196,8 +197,8 @@ void ais_display_create(int n) {
     lv_color_t grey  = lv_color_make(200, 200, 200);
     make_label(a_range_lbl[n], "",        green, LV_ALIGN_TOP_LEFT,     8,   8);
     make_label(a_tgt_lbl[n],   "TGT: 0", green, LV_ALIGN_TOP_RIGHT,   -8,  8);
-    make_label(a_cog_lbl[n],   "COG ---", grey,  LV_ALIGN_BOTTOM_LEFT,  8, -28);
-    make_label(a_sog_lbl[n],   "SOG ---", grey,  LV_ALIGN_BOTTOM_LEFT,  8,  -8);
+    make_label(a_cog_lbl[n],   "", grey,  LV_ALIGN_BOTTOM_LEFT,  8, -28);
+    make_label(a_sog_lbl[n],   "", grey,  LV_ALIGN_BOTTOM_LEFT,  8,  -8);
 
     Serial.printf("[AIS] Display created on screen %d\n", n);
 }
@@ -351,13 +352,13 @@ void ais_display_update(int n, float own_lat, float own_lon,
     }
     if (a_sog_lbl[n]) {
         char buf[24];
-        snprintf(buf, sizeof(buf), isnan(own_sog) ? "SOG ---" : "SOG %.1f kn", own_sog);
+        snprintf(buf, sizeof(buf), isnan(own_sog) ? "" : "SOG %.1f kn", own_sog);
         lv_label_set_text(a_sog_lbl[n], buf);
     }
     if (a_cog_lbl[n]) {
         char buf[24];
         if (isnan(own_cog))
-            snprintf(buf, sizeof(buf), "COG ---");
+            snprintf(buf, sizeof(buf), "");
         else
             snprintf(buf, sizeof(buf), "COG %03.0f\xc2\xb0", own_cog);
         lv_label_set_text(a_cog_lbl[n], buf);

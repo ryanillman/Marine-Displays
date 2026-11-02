@@ -67,10 +67,13 @@ String get_sensor_description_by_path(const String& path);
 // that library build does not have the widget include path.
 #include "../marine-widgets/include/widget_ops.h"
 
-// Same numbers the float getters return. valid stays true: a mutex timeout,
-// an empty path, and a JSON null are still what the glass draws.
+// valid is false until a finite sample is stored and the stream is up.
+// A mutex timeout, an empty path, JSON null, and a down source are invalid.
+// A steady value on a live connection stays valid.
 Sample get_sensor_sample(int index);
 Sample get_sensor_sample_by_path(const String& path);
+bool nav_position_valid();
+void alarm_monitor_poll(int visible_screen_1based);
 
 // Backward compatibility helpers
 inline float get_frequency_hz() { return get_sensor_value(SCREEN1_RPM); }
